@@ -14,7 +14,6 @@ import { serveStatic, setupVite } from "./vite.js";
 
 // Middleware
 import {
-  forceHttps,
   securityHeaders,
   cors,
   authRateLimit,
@@ -36,7 +35,7 @@ const server = createServer(app);
 const PROD = process.env.NODE_ENV === "production";
 
 // ── 1. HTTPS Redirect ───────────────────────────────────────────────
-app.use(forceHttps);
+// Removed: Railway handles HTTPS at the proxy level.
 
 // ── 2. Logging ──────────────────────────────────────────────────────
 app.use(requestLogger);

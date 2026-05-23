@@ -11,14 +11,9 @@ const PROD = process.env.NODE_ENV === "production";
 const APP_ORIGIN = process.env.APP_URL ?? "https://content-machine-production-d5dc.up.railway.app";
 
 // ── Force HTTPS ────────────────────────────────────────────────────
-export function forceHttps(req: Request, res: Response, next: NextFunction) {
-  if (!PROD) return next();
-  const proto = req.headers["x-forwarded-proto"] ?? req.protocol;
-  if (proto !== "https") {
-    return res.redirect(301, `https://${req.headers.host}${req.url}`);
-  }
-  next();
-}
+// Removed: Railway terminates TLS at the proxy level, so all traffic
+// reaching the container is HTTP. This middleware was blocking Railway's
+// internal healthcheck requests. HSTS is handled via securityHeaders.
 
 // ── Security Headers (manual, no helmet dep needed) ───────────────
 export function securityHeaders(_req: Request, res: Response, next: NextFunction) {
