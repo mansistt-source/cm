@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1777806002746,
+      "tag": "0000_remarkable_starbolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1777806674644,
+      "tag": "0001_volatile_centennial",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1779509923975,
+      "tag": "0002_auth_paypal_hardening",
+      "breakpoints": true
+    }
+  ]
+}

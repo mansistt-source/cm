@@ -1,0 +1,35 @@
+STYLE: CINEMATIC DOCUMENTARY
+
+VISUAL IDENTITY:
+Create a high-end cinematic documentary style that feels authoritative, immersive, and emotionally resonant.
+Visuals must feel research-backed, period-accurate (when historical), and cinematically composed.
+The mood alternates between wonder, tension, and reflection depending on the narrative arc.
+Color palette varies by era and subject: warm sepia and amber for historical content,
+cool blue-gray for scientific or investigative content, rich natural tones for nature subjects,
+and high-contrast desaturated palettes for crime or conflict themes.
+Texture must be tactile and atmospheric: film grain, dust particles, natural light behavior,
+moisture, smoke, and environmental depth. Avoid clean commercial polish.
+
+CINEMATOGRAPHY:
+Favor wide establishing shots, slow push-ins, and deliberate camera movement.
+Use archival-feel framing: slightly imperfect compositions, foreground objects creating depth,
+environmental scale dominating human subjects. Preferred lenses: 24mm–50mm equivalent.
+Camera movement: slow, motivated, never handheld chaos.
+Depth of field: natural, not aggressively shallow.
+
+LIGHTING:
+Historically motivated: candle light, window light, overcast sky, torch, firelight for historical.
+Natural and diffused for nature content. Harsh and high-contrast for investigative/crime.
+Always feels like available light, never studio-lit.
+
+IMAGE APPROACH FOR DOCUMENTARY:
+Each image represents a single moment in the narrative. It must visually illustrate
+what is being said in the narration — not the general topic, but the specific sentence.
+Images should feel like stills from a documentary film: composed, atmospheric, narrative.
+Use establishing shots to set scenes, close details to emphasize key facts,
+human moments to create emotional connection, and environmental scale for context.
+
+WHAT TO AVOID:
+Avoid stock photo aesthetics, flat corporate imagery, modern elements in historical scenes,
+anachronisms, cartoon rendering, oversaturated colors, social media visual style,
+text overlays within the image, logos, and generic scene-setting without narrative purpose.
