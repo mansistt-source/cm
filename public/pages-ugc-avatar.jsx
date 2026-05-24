@@ -53,7 +53,7 @@ function UgcAvatarPage({ p, navigate, credits = 4820 }) {
 
   return (
     <PageFrame p={p} density={0.3}>
-      <AuthedNav p={p} current="service-agent" navigate={navigate} credits={credits} onLogout={() => navigate("auth")} />
+     <AuthedNav p={p} current="ugc-avatar" navigate={navigate} credits={credits} onLogout={() => navigate("auth")} />
 
       <div style={{ padding: "26px 32px 32px", maxWidth: 1200, margin: "0 auto" }}>
 
