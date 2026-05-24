@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CONTENT/MACHINE — Crimson Ops</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=Inter:wght@400;500;600;700&family=Noto+Kufi+Arabic:wght@400;500;700&display=swap" rel="stylesheet" />
+
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0807; min-height: 100%; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Inter', 'Noto Kufi Arabic', sans-serif; }
+  ::selection { background: #ff4332; color: #0a0807; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0a0807; }
+  ::-webkit-scrollbar-thumb { background: #2a1f1c; }
+  ::-webkit-scrollbar-thumb:hover { background: #ff4332; }
+  [dir="rtl"] { font-family: 'Noto Kufi Arabic', 'Inter', sans-serif; }
+  #root { min-height: 100vh; background: #0a0807; }
+</style>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="palettes.jsx"></script>
+<script type="text/babel" src="hud.jsx"></script>
+<script type="text/babel" src="shaders.jsx"></script>
+<script type="text/babel" src="lobby.jsx"></script>
+<script type="text/babel" src="app-shell.jsx"></script>
+<script type="text/babel" src="landing-page.jsx"></script>
+<script type="text/babel" src="pages-auth-misc.jsx"></script>
+<script type="text/babel" src="pages-dashboard.jsx"></script>
+<script type="text/babel" src="pages-create-market.jsx"></script>
+<script type="text/babel" src="pages-marketing-modes.jsx"></script>
+<script type="text/babel" src="pages-marketing-studio.jsx"></script>
+<script type="text/babel" src="pages-service-agent.jsx"></script>
+<script type="text/babel" src="pages-projects.jsx"></script>
+<script type="text/babel" src="pages-ugc-avatar.jsx"></script>
+
+<script type="text/babel" data-presets="react">
+const p = window.PALETTES.crimson;
+
+const ROUTES = {
+  landing: "landing",
+  auth: "auth",
+  dashboard: "dashboard",
+  "service-agent": "service-agent",
+  "film-hub": "film-hub",
+  create: "create",
+  "market-hub": "market-hub",
+  market: "market",
+  "ugc-avatar": "ugc-avatar",
+  library: "library",
+  "project-detail": "project-detail",
+  settings: "settings",
+};
+
+const PATH_ALIASES = {
+  "": "landing",
+  "index": "landing",
+  "index.html": "landing",
+  "site": "landing",
+  "site.html": "landing",
+  "landing-page": "landing",
+  "landing-page.html": "landing",
+  "auth": "auth",
+  "auth.html": "auth",
+  "dashboard": "dashboard",
+  "dashboard.html": "dashboard",
+  "service-agent": "service-agent",
+  "service-agent.html": "service-agent",
+  "film-hub": "film-hub",
+  "film-hub.html": "film-hub",
+  "create": "create",
+  "create.html": "create",
+  "market-hub": "market-hub",
+  "market-hub.html": "market-hub",
+  "market": "market",
+  "market.html": "market",
+  "ugc-avatar": "ugc-avatar",
+  "ugc-avatar.html": "ugc-avatar",
+  "library": "library",
+  "projects": "library",
+  "project-detail": "project-detail",
+  "settings": "settings",
+};
+
+function cleanRoute(raw) {
+  const value = String(raw || "").replace(/^#\/?/, "").replace(/^\/?/, "").replace(/\?.*$/, "").replace(/\/$/, "");
+  return PATH_ALIASES[value] || ROUTES[value] || "404";
+}
+
+function readRoute() {
+  if (window.location.hash && window.location.hash !== "#") return cleanRoute(window.location.hash);
+  return cleanRoute(window.location.pathname.split("/").filter(Boolean).pop() || "");
+}
+
+function App() {
+  const [route, setRoute] = React.useState(readRoute);
+  const [params, setParams] = React.useState({});
+
+  React.useEffect(() => {
+    const onHash = () => setRoute(readRoute());
+    window.addEventListener("hashchange", onHash);
+    window.__cmNav = navigate;
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      delete window.__cmNav;
+    };
+  }, []);
+
+  function navigate(target, nextParams = {}) {
+    const next = cleanRoute(target);
+    setParams(nextParams || {});
+    if (next === "404") {
+      window.location.hash = "#/404";
+      setRoute("404");
+      return;
+    }
+    window.location.hash = `#/${next}`;
+    setRoute(next);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  const common = { p, navigate };
+  let view;
+
+  switch (route) {
+    case "landing":
+      view = <LandingPage />;
+      break;
+    case "auth":
+      view = <AuthPage {...common} />;
+      break;
+    case "dashboard":
+      view = <DashboardPage {...common} />;
+      break;
+    case "service-agent":
+      view = <ServiceAgentPage {...common} />;
+      break;
+    case "film-hub":
+      view = <FilmHubPage {...common} />;
+      break;
+    case "create":
+      view = <CreatePage {...common} project={params.project} />;
+      break;
+    case "market-hub":
+      view = <MarketHubPage {...common} />;
+      break;
+    case "market":
+      view = <MarketStudioPage {...common} project={params.project} />;
+      break;
+    case "ugc-avatar":
+      view = <UgcAvatarPage {...common} />;
+      break;
+    case "library":
+      view = <LibraryPage {...common} />;
+      break;
+    case "project-detail":
+      view = <ProjectDetailPage {...common} projectId={params.id || 1} />;
+      break;
+    case "settings":
+      view = <SettingsPage {...common} />;
+      break;
+    default:
+      view = <NotFoundPage {...common} />;
+  }
+
+  return view;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
