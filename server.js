@@ -113,6 +113,70 @@ function makeTempToken(payload, minutes = 10) {
   return signToken({ ...payload, exp: Date.now() + 1000 * 60 * minutes });
 }
 
+function tokenFromRequest(req) {
+  const auth = req.headers.authorization || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  return bearer || parseCookies(req).cm_token || '';
+}
+
+function clientIp(req) {
+  return String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '')
+    .split(',')[0]
+    .trim()
+    .replace(/^::ffff:/, '') || 'unknown';
+}
+
+function deviceNameFromUserAgent(userAgent) {
+  const ua = String(userAgent || 'Unknown device');
+  let browser = 'Browser';
+  if (/Edg\//i.test(ua)) browser = 'Microsoft Edge';
+  else if (/Chrome\//i.test(ua)) browser = 'Chrome';
+  else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) browser = 'Safari';
+  else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+  let os = 'Unknown OS';
+  if (/Windows/i.test(ua)) os = 'Windows';
+  else if (/Mac OS|Macintosh/i.test(ua)) os = 'macOS';
+  else if (/Android/i.test(ua)) os = 'Android';
+  else if (/iPhone|iPad/i.test(ua)) os = 'iOS';
+  else if (/Linux/i.test(ua)) os = 'Linux';
+  return `${browser} · ${os}`;
+}
+
+function createSession(db, user, req, method = 'password') {
+  const session = {
+    id: id('session'),
+    userId: user.id,
+    method,
+    deviceName: deviceNameFromUserAgent(req.headers['user-agent'] || ''),
+    userAgent: String(req.headers['user-agent'] || ''),
+    ip: clientIp(req),
+    active: true,
+    createdAt: now(),
+    lastSeenAt: now()
+  };
+  db.sessions ||= [];
+  db.sessions.push(session);
+  return session;
+}
+
+function makeTokenForSession(user, session) {
+  return signToken({ purpose: 'auth', userId: user.id, role: user.role, sv: Number(user.sessionVersion || 0), sid: session?.id || null, exp: Date.now() + 1000 * 60 * 60 * 24 * 7 });
+}
+
+function sessionPublic(session, currentSid) {
+  return {
+    id: session.id,
+    deviceName: session.deviceName || deviceNameFromUserAgent(session.userAgent),
+    ip: session.ip || 'unknown',
+    method: session.method || 'password',
+    active: session.active !== false,
+    current: Boolean(currentSid && session.id === currentSid),
+    createdAt: session.createdAt,
+    lastSeenAt: session.lastSeenAt,
+    userAgent: session.userAgent || ''
+  };
+}
+
 function setAuthCookie(res, token, maxAge = 604800) {
   res.setHeader('set-cookie', `cm_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${COOKIE_SECURE}`);
 }
@@ -220,7 +284,7 @@ async function ensureData() {
   try {
     await stat(DB_FILE);
   } catch {
-    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [] }, null, 2));
+    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [], sessions: [] }, null, 2));
   }
 }
 
@@ -230,6 +294,7 @@ function normalizeDb(db) {
   db.files ||= [];
   db.payments ||= [];
   db.deliverables ||= [];
+  db.sessions ||= [];
   db.users = db.users.map((u) => ({
     sessionVersion: 0,
     twoFactorEnabled: false,
@@ -262,17 +327,26 @@ async function readBody(req) {
   }
 }
 
-async function getCurrentUser(req) {
-  const auth = req.headers.authorization || '';
-  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  const cookieToken = parseCookies(req).cm_token;
-  const payload = verifyToken(bearer || cookieToken);
+async function getAuthContext(req) {
+  const payload = verifyToken(tokenFromRequest(req));
   if (!payload || payload.purpose !== 'auth') return null;
   const db = await loadDb();
   const user = db.users.find((u) => u.id === payload.userId) || null;
   if (!user) return null;
   if (Number(payload.sv || 0) !== Number(user.sessionVersion || 0)) return null;
-  return user;
+  let session = null;
+  if (payload.sid) {
+    session = (db.sessions || []).find((s) => s.id === payload.sid && s.userId === user.id) || null;
+    if (!session || session.active === false) return null;
+    session.lastSeenAt = now();
+    await saveDb(db);
+  }
+  return { user, payload, session, db };
+}
+
+async function getCurrentUser(req) {
+  const ctx = await getAuthContext(req);
+  return ctx ? ctx.user : null;
 }
 
 async function requireUser(req, res) {
@@ -350,6 +424,7 @@ function routeMatch(pathname, pattern) {
 async function handleApi(req, res, url) {
   const method = req.method || 'GET';
   const pathname = url.pathname;
+  let params;
 
   if (method === 'OPTIONS') {
     res.writeHead(204);
@@ -389,7 +464,9 @@ async function handleApi(req, res, url) {
     const user = { id: id('user'), name, email, passwordSalt: salt, passwordHash: hash, googleSub: null, loginMethod: 'password', role, sessionVersion: 0, twoFactorEnabled: false, twoFactorSecret: null, createdAt: now(), updatedAt: now() };
     db.users.push(user);
     await saveDb(db);
-    const token = makeToken(user);
+    const session = createSession(db, user, req, 'password_register');
+    await saveDb(db);
+    const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
     json(res, 201, { user: publicUser(user), token });
     return true;
@@ -406,7 +483,9 @@ async function handleApi(req, res, url) {
       json(res, 200, { requires2fa: true, challenge: makeTwoFactorChallenge(user), userPreview: { email: user.email, name: user.name } });
       return true;
     }
-    const token = makeToken(user);
+    const session = createSession(db, user, req, 'password_login');
+    await saveDb(db);
+    const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
     json(res, 200, { user: publicUser(user), token });
     return true;
@@ -435,7 +514,9 @@ async function handleApi(req, res, url) {
       json(res, 200, { requires2fa: true, challenge: makeTwoFactorChallenge(user), userPreview: { email: user.email, name: user.name } });
       return true;
     }
-    const token = makeToken(user);
+    const session = createSession(db, user, req, 'google_login');
+    await saveDb(db);
+    const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
     json(res, 200, { user: publicUser(user), token });
     return true;
@@ -454,7 +535,9 @@ async function handleApi(req, res, url) {
     const user = { id: id('user'), name, email: String(payload.email).toLowerCase(), googleSub: payload.googleSub, loginMethod: 'google', passwordSalt: null, passwordHash: null, role, sessionVersion: 0, twoFactorEnabled: false, twoFactorSecret: null, createdAt: now(), updatedAt: now() };
     db.users.push(user);
     await saveDb(db);
-    const token = makeToken(user);
+    const session = createSession(db, user, req, 'google_register');
+    await saveDb(db);
+    const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
     json(res, 201, { user: publicUser(user), token });
     return true;
@@ -468,7 +551,9 @@ async function handleApi(req, res, url) {
     const user = db.users.find((u) => u.id === payload.userId);
     if (!user || Number(payload.sv || 0) !== Number(user.sessionVersion || 0)) return fail(res, 401, 'bad_2fa_session', '2FA session expired');
     if (!user.twoFactorEnabled || !verifyTotp(user.twoFactorSecret, body.code)) return fail(res, 401, 'bad_2fa_code', 'Invalid 2FA code');
-    const token = makeToken(user);
+    const session = createSession(db, user, req, '2fa_login');
+    await saveDb(db);
+    const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
     json(res, 200, { user: publicUser(user), token });
     return true;
@@ -482,6 +567,12 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'POST' && pathname === '/api/auth/logout') {
+    const payload = verifyToken(tokenFromRequest(req));
+    if (payload?.sid) {
+      const db = await loadDb();
+      const session = (db.sessions || []).find((s) => s.id === payload.sid);
+      if (session) { session.active = false; session.lastSeenAt = now(); await saveDb(db); }
+    }
     clearAuthCookie(res);
     json(res, 200, { ok: true });
     return true;
@@ -507,8 +598,12 @@ async function handleApi(req, res, url) {
     target.loginMethod = target.googleSub ? 'password_google' : 'password';
     target.sessionVersion = Number(target.sessionVersion || 0) + 1;
     target.updatedAt = now();
+    (db.sessions || []).forEach((s) => { if (s.userId === target.id) s.active = false; });
     await saveDb(db);
-    const token = makeToken(target);
+    (db.sessions || []).forEach((s) => { if (s.userId === target.id) s.active = false; });
+    const session = createSession(db, target, req, 'password_changed');
+    await saveDb(db);
+    const token = makeTokenForSession(target, session);
     setAuthCookie(res, token);
     json(res, 200, { ok: true, user: publicUser(target), token });
     return true;
@@ -556,6 +651,32 @@ async function handleApi(req, res, url) {
     target.updatedAt = now();
     await saveDb(db);
     json(res, 200, { ok: true, user: publicUser(target) });
+    return true;
+  }
+
+
+  if (method === 'GET' && pathname === '/api/security/sessions') {
+    const ctx = await getAuthContext(req);
+    if (!ctx) return fail(res, 401, 'unauthorized', 'Login required');
+    const sessions = (ctx.db.sessions || [])
+      .filter((s) => s.userId === ctx.user.id && s.active !== false)
+      .sort((a, b) => String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')))
+      .map((s) => sessionPublic(s, ctx.payload.sid));
+    json(res, 200, { sessions });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/security/sessions/:id/revoke');
+  if (params && method === 'POST') {
+    const ctx = await getAuthContext(req);
+    if (!ctx) return fail(res, 401, 'unauthorized', 'Login required');
+    const session = (ctx.db.sessions || []).find((s) => s.id === params.id && s.userId === ctx.user.id);
+    if (!session) return notFound(res);
+    session.active = false;
+    session.lastSeenAt = now();
+    await saveDb(ctx.db);
+    if (ctx.payload.sid === session.id) clearAuthCookie(res);
+    json(res, 200, { ok: true, currentRevoked: ctx.payload.sid === session.id });
     return true;
   }
 
@@ -613,7 +734,7 @@ async function handleApi(req, res, url) {
     return true;
   }
 
-  let params = routeMatch(pathname, '/api/projects/:id');
+  params = routeMatch(pathname, '/api/projects/:id');
   if (params && method === 'GET') {
     const user = await requireUser(req, res);
     if (!user) return true;
@@ -654,6 +775,24 @@ async function handleApi(req, res, url) {
     project.updatedAt = now();
     await saveDb(db);
     json(res, 200, { project });
+    return true;
+  }
+
+
+  params = routeMatch(pathname, '/api/projects/:id');
+  if (params && method === 'DELETE') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const db = await loadDb();
+    const project = db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    db.projects = db.projects.filter((p) => p.id !== project.id);
+    db.files = db.files.filter((f) => f.projectId !== project.id);
+    db.payments = db.payments.filter((pay) => pay.projectId !== project.id);
+    db.deliverables = db.deliverables.filter((d) => d.projectId !== project.id);
+    await saveDb(db);
+    json(res, 200, { ok: true });
     return true;
   }
 

@@ -8,7 +8,7 @@ async function projApi(path, opts = {}) {
   if (!res.ok) throw new Error(data.message || data.error || "API request failed");
   return data;
 }
-function projLogout(navigate) { fetch("/api/auth/logout", { method:"POST", headers: projToken() ? { Authorization:`Bearer ${projToken()}` } : {} }).catch(()=>{}); localStorage.removeItem("cm_token"); localStorage.removeItem("cm_user"); history.replaceState(null, "", "#/auth"); navigate("auth"); }
+function projLogout(navigate) { fetch("/api/auth/logout", { method:"POST", headers: projToken() ? { Authorization:`Bearer ${projToken()}` } : {} }).catch(()=>{}); localStorage.removeItem("cm_token"); localStorage.removeItem("cm_user"); window.dispatchEvent(new Event("cm-auth-changed")); history.replaceState(null, "", "#/auth"); navigate("auth"); }
 function projStatusLabel(s) { return ({ draft:"DRAFT", pending_payment:"PAYMENT", paid:"PAID", in_production:"PRODUCTION", delivered:"DELIVERED", cancelled:"CANCELLED", failed:"FAILED" })[s] || String(s || "").toUpperCase(); }
 function projStatusColor(p, s) { return ({ draft:p.dim, pending_payment:p.warn, paid:p.accent2, in_production:p.accent, delivered:p.accent2, cancelled:p.warn, failed:p.warn })[s] || p.dim; }
 function projServiceLabel(s) { return ({ film_maker:"صانع الأفلام", marketing_agent:"وكيل التسويق", service_agent:"وكيل الخدمة", youtube_documentary:"وثائقي يوتيوب", ugc_avatar:"أفاتار UGC" })[s] || s || "مشروع"; }
@@ -124,7 +124,6 @@ function NewProjectModalConnected({ p, packages, onClose, onCreated }) {
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
       <TacticalInput p={p} label="اسم المشروع" value={title} onChange={setTitle} placeholder="مثال: حملة إطلاق العطر" />
       <TacticalTextarea p={p} label="وصف مختصر" value={description} onChange={setDescription} rows={4} placeholder="اكتب وصف بسيط فقط. نوع الخدمة، الباقة، الستايل، والمدة ستُضبط من داخل صفحة المشروع." />
-      <Toast p={p}>هذا ينشئ مساحة مشروع فقط. لا يتم اختيار باقة أو دفع أو ستايل في هذه النافذة.</Toast>
       {err && <Toast p={p} type="error">{err}</Toast>}
       <div style={{ display:"flex", gap:10, marginTop:6 }}><CrunchBtn p={p} label="إلغاء" full onClick={onClose} /><CrunchBtn p={p} label={loading?"جاري الإنشاء...":"إنشاء وفتح"} solid icon="▶" full onClick={create} disabled={loading} /></div>
     </div>
@@ -158,7 +157,7 @@ function ProjectDetailPage({ p, navigate, projectId }) {
   return <PageFrame p={p} density={0.35}>
     <AuthedNav p={p} current="project-detail" navigate={navigate} user={user} onLogout={() => projLogout(navigate)} />
     <div style={{ padding:"32px", maxWidth:1200, margin:"0 auto" }}>
-      <SectionHead p={p} code="// PROJECT_DETAIL" title={project ? project.title : "تفاصيل المشروع"} sub={project ? `${projServiceLabel(project.serviceType)} · ${project.packageKey ? packageName(project.packageKey) : "بدون باقة"}${Number(project.priceUsd || 0) ? ` · $${project.priceUsd}` : ""}` : "تحميل..."} right={<CrunchBtn p={p} label="رجوع للمشاريع" onClick={() => navigate("library")} />} />
+      <SectionHead p={p} code="// PROJECT_DETAIL" title={project ? project.title : "تفاصيل المشروع"} sub={project ? `${projServiceLabel(project.serviceType)} · ${project.packageKey ? packageName(project.packageKey) : "بدون باقة"}${Number(project.priceUsd || 0) ? ` · $${project.priceUsd}` : ""}` : "تحميل..."} right={<div style={{ display:"flex", gap:8 }}><CrunchBtn p={p} label="رجوع للمشاريع" onClick={() => navigate("library")} />{project && <CrunchBtn p={p} label="حذف المشروع" danger onClick={async()=>{ if(!window.confirm(`حذف المشروع: ${project.title}؟`)) return; await projApi(`/api/projects/${project.id}`, { method:"DELETE" }); navigate("library"); }} />}</div>} />
       {err && <div style={{ marginBottom:14 }}><Toast p={p} type="error">{err}</Toast></div>}
       {loading ? <Panel p={p} padding={40} style={{ textAlign:"center" }}><AuroraLoader p={p} size={80} /></Panel> : null}
       {project && !loading && <>
@@ -193,6 +192,7 @@ function ProjectDetailPage({ p, navigate, projectId }) {
 }
 
 function ProjectConfigPanel({ p, project, packages, onSaved }) {
+  const [title, setTitle] = React.useState(project.title || "");
   const [serviceType, setServiceType] = React.useState(project.serviceType || "service_agent");
   const [packageKey, setPackageKey] = React.useState(project.packageKey || "");
   const [style, setStyle] = React.useState(project.style || "");
@@ -206,7 +206,7 @@ function ProjectConfigPanel({ p, project, packages, onSaved }) {
     try {
       const d = await projApi(`/api/projects/${project.id}`, {
         method:"PATCH",
-        body: JSON.stringify({ serviceType, packageKey, style, durationSeconds:Number(durationSeconds || 0), brief })
+        body: JSON.stringify({ title, serviceType, packageKey, style, durationSeconds:Number(durationSeconds || 0), brief })
       });
       onSaved?.(d.project);
       setMsg("تم حفظ إعدادات المشروع");
@@ -217,6 +217,7 @@ function ProjectConfigPanel({ p, project, packages, onSaved }) {
   return <Panel p={p} padding={22} style={{ marginBottom:18 }}>
     <Tag p={p}>PROJECT_CONFIGURATION</Tag>
     <div style={{ marginTop:12, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.7 }}>هنا يتم ضبط نوع الخدمة، الباقة، الستايل، والمدة بعد إنشاء المشروع. نافذة الإنشاء تبقى فقط للاسم والوصف.</div>
+    <div style={{ marginTop:14 }}><TacticalInput p={p} label="اسم المشروع" value={title} onChange={setTitle} placeholder="اسم المشروع" /></div>
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginTop:14 }}>
       <FormSelect p={p} label="نوع الخدمة" value={serviceType} onChange={setServiceType} options={[ ["service_agent","وكيل الخدمة"], ["film_maker","صانع الأفلام"], ["marketing_agent","وكيل التسويق"], ["youtube_documentary","وثائقي يوتيوب"], ["ugc_avatar","أفاتار UGC"] ]} />
       <FormSelect p={p} label="الباقة" value={packageKey} onChange={setPackageKey} options={[ ["","اختر الباقة لاحقًا"], ["starter","Starter · $150"], ["growth","Growth · $300"], ["pro","Pro · $800"], ["agency","Agency · $1500"] ]} />
@@ -268,24 +269,171 @@ function FileListPanel({ p, title, items, empty }) {
   </Panel>;
 }
 
+
 function SettingsPage({ p, navigate, credits = 0 }) {
   const [user, setUser] = React.useState(projCurrentUser());
-  React.useEffect(() => { if (projToken()) projApi("/api/auth/me").then(d => { if (d.user) { setUser(d.user); localStorage.setItem("cm_user", JSON.stringify(d.user)); } }).catch(() => {}); }, []);
+  const [msg, setMsg] = React.useState("");
+  const [err, setErr] = React.useState("");
+  const [sessions, setSessions] = React.useState([]);
+  const [showSecrets, setShowSecrets] = React.useState({ current:false, next:false, confirm:false, disable:false });
+  const [pw, setPw] = React.useState({ currentPassword:"", newPassword:"", confirmPassword:"" });
+  const [twofa, setTwofa] = React.useState({ secret:"", otpauthUrl:"", code:"", disablePassword:"", disableCode:"" });
+
+  async function loadSecurity() {
+    if (!projToken()) { navigate("auth"); return; }
+    setErr("");
+    try {
+      const me = await projApi("/api/auth/me");
+      if (me.user) { setUser(me.user); localStorage.setItem("cm_user", JSON.stringify(me.user)); }
+      const s = await projApi("/api/security/sessions");
+      setSessions(s.sessions || []);
+    } catch (e) {
+      setErr(e.message || "فشل تحميل إعدادات الأمان");
+    }
+  }
+  React.useEffect(() => { loadSecurity(); }, []);
+
+  function confirmLogout() {
+    if (window.confirm("هل أنت متأكد من تسجيل الخروج؟")) projLogout(navigate);
+  }
+
+  async function changePassword() {
+    setErr(""); setMsg("");
+    if (!pw.newPassword || pw.newPassword !== pw.confirmPassword) { setErr("كلمة المرور الجديدة غير متطابقة"); return; }
+    try {
+      const d = await projApi("/api/security/change-password", { method:"POST", body:JSON.stringify(pw) });
+      if (d.token) localStorage.setItem("cm_token", d.token);
+      if (d.user) { localStorage.setItem("cm_user", JSON.stringify(d.user)); setUser(d.user); }
+      setPw({ currentPassword:"", newPassword:"", confirmPassword:"" });
+      setMsg("تم تغيير كلمة المرور وتحديث الجلسة الحالية");
+      await loadSecurity();
+    } catch (e) { setErr(e.message || "فشل تغيير كلمة المرور"); }
+  }
+
+  async function setup2fa() {
+    setErr(""); setMsg("");
+    try {
+      const d = await projApi("/api/security/2fa/setup", { method:"POST" });
+      setTwofa({ ...twofa, secret:d.secret || "", otpauthUrl:d.otpauthUrl || "" });
+      setMsg("امسح الرابط أو انسخ السر في تطبيق المصادقة ثم اكتب الكود للتفعيل");
+    } catch(e) { setErr(e.message || "فشل تجهيز المصادقة"); }
+  }
+
+  async function enable2fa() {
+    setErr(""); setMsg("");
+    try {
+      const d = await projApi("/api/security/2fa/enable", { method:"POST", body:JSON.stringify({ code:twofa.code }) });
+      if (d.user) { setUser(d.user); localStorage.setItem("cm_user", JSON.stringify(d.user)); }
+      setTwofa({ secret:"", otpauthUrl:"", code:"", disablePassword:"", disableCode:"" });
+      setMsg("تم تفعيل المصادقة الثنائية");
+    } catch(e) { setErr(e.message || "فشل تفعيل المصادقة"); }
+  }
+
+  async function disable2fa() {
+    setErr(""); setMsg("");
+    try {
+      const d = await projApi("/api/security/2fa/disable", { method:"POST", body:JSON.stringify({ password:twofa.disablePassword, code:twofa.disableCode }) });
+      if (d.user) { setUser(d.user); localStorage.setItem("cm_user", JSON.stringify(d.user)); }
+      setTwofa({ secret:"", otpauthUrl:"", code:"", disablePassword:"", disableCode:"" });
+      setMsg("تم إلغاء المصادقة الثنائية");
+    } catch(e) { setErr(e.message || "فشل إلغاء المصادقة"); }
+  }
+
+  async function revokeSession(session) {
+    if (!window.confirm(`إنهاء جلسة ${session.deviceName}؟`)) return;
+    setErr(""); setMsg("");
+    try {
+      const d = await projApi(`/api/security/sessions/${session.id}/revoke`, { method:"POST" });
+      if (d.currentRevoked) { projLogout(navigate); return; }
+      setMsg("تم إنهاء الجلسة");
+      await loadSecurity();
+    } catch(e) { setErr(e.message || "فشل إنهاء الجلسة"); }
+  }
+
+  async function logoutAll() {
+    if (!window.confirm("إنهاء كل الجلسات على كل الأجهزة؟ سيتم تسجيل خروجك أيضاً.")) return;
+    setErr(""); setMsg("");
+    try { await projApi("/api/security/logout-all", { method:"POST" }); projLogout(navigate); }
+    catch(e) { setErr(e.message || "فشل إنهاء الجلسات"); }
+  }
+
   return <PageFrame p={p} density={0.35}>
-    <AuthedNav p={p} current="settings" navigate={navigate} credits={credits} user={user} onLogout={() => projLogout(navigate)} />
-    <div style={{ padding:"32px", maxWidth:900, margin:"0 auto" }}>
-      <SectionHead p={p} code="// SETTINGS" title="الإعدادات" sub="إدارة الحساب والخروج" />
-      <Panel p={p} padding={24}>
+    <AuthedNav p={p} current="settings" navigate={navigate} credits={credits} user={user} onLogout={confirmLogout} />
+    <div style={{ padding:"32px", maxWidth:980, margin:"0 auto" }}>
+      <SectionHead p={p} code="// ACCOUNT_SECURITY" title="الإعدادات والأمان" sub="الحساب، كلمة المرور، المصادقة، والجلسات النشطة" />
+      {err && <div style={{ marginBottom:12 }}><Toast p={p} type="error">{err}</Toast></div>}
+      {msg && <div style={{ marginBottom:12 }}><Toast p={p} type="success">{msg}</Toast></div>}
+
+      <Panel p={p} padding={24} style={{ marginBottom:16 }}>
         <Tag p={p}>ACCOUNT</Tag>
-        <div style={{ marginTop:14, fontFamily:"'Inter', sans-serif", color:p.fg, lineHeight:1.8 }}>
-          <div>الاسم: {user.name}</div>
-          <div>البريد: {user.email}</div>
-          <div>الصلاحية: {user.role}</div>
+        <div style={{ marginTop:14, display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12 }}>
+          <MiniConnected p={p} l="NAME" v={user.name || "غير محدد"} />
+          <MiniConnected p={p} l="EMAIL" v={user.email || ""} mono />
+          <MiniConnected p={p} l="ROLE" v={user.role || "user"} accent />
         </div>
-        <div style={{ marginTop:18 }}><CrunchBtn p={p} label="تسجيل خروج" danger icon="!" onClick={() => projLogout(navigate)} /></div>
+        <div style={{ marginTop:18 }}><CrunchBtn p={p} label="تسجيل خروج" danger icon="!" onClick={confirmLogout} /></div>
+      </Panel>
+
+      <Panel p={p} padding={24} style={{ marginBottom:16 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"center" }}>
+          <Tag p={p}>TWO_FACTOR_AUTH</Tag>
+          <Tag p={p} color={user.twoFactorEnabled ? p.accent2 : p.warn}>{user.twoFactorEnabled ? "مفعلة · ACTIVATED" : "غير مفعلة"}</Tag>
+        </div>
+        <div style={{ marginTop:14, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.8 }}>فعّل المصادقة بتطبيق Authenticator. النظام لا يخزن كودك، فقط السر المشفر داخليًا للتحقق.</div>
+        {!user.twoFactorEnabled && <div style={{ marginTop:14 }}>
+          <CrunchBtn p={p} label="تجهيز المصادقة" solid onClick={setup2fa} />
+          {twofa.secret && <div style={{ marginTop:14, display:"grid", gap:10 }}>
+            <div style={{ direction:"ltr", textAlign:"left", color:p.fg, background:p.bg0, border:`1px solid ${p.border}`, padding:12, fontFamily:"'Space Mono', monospace", fontSize:11, wordBreak:"break-all" }}>{twofa.otpauthUrl}</div>
+            <div style={{ direction:"ltr", textAlign:"left", color:p.accent2, fontFamily:"'Space Mono', monospace", fontSize:12 }}>SECRET: {twofa.secret}</div>
+            <TacticalInput p={p} label="كود المصادقة" value={twofa.code} onChange={(v)=>setTwofa({...twofa, code:v})} placeholder="123456" rtl={false} />
+            <CrunchBtn p={p} label="تفعيل المصادقة" solid onClick={enable2fa} />
+          </div>}
+        </div>}
+        {user.twoFactorEnabled && <div style={{ marginTop:14, display:"grid", gap:10 }}>
+          <PasswordField p={p} label="كلمة المرور للتأكيد" value={twofa.disablePassword} onChange={(v)=>setTwofa({...twofa, disablePassword:v})} show={showSecrets.disable} onToggle={()=>setShowSecrets({...showSecrets, disable:!showSecrets.disable})} />
+          <TacticalInput p={p} label="كود المصادقة" value={twofa.disableCode} onChange={(v)=>setTwofa({...twofa, disableCode:v})} placeholder="123456" rtl={false} />
+          <CrunchBtn p={p} label="إلغاء المصادقة" danger onClick={disable2fa} />
+        </div>}
+      </Panel>
+
+      <Panel p={p} padding={24} style={{ marginBottom:16 }}>
+        <Tag p={p}>CHANGE_PASSWORD</Tag>
+        <div style={{ marginTop:14, display:"grid", gap:12 }}>
+          <PasswordField p={p} label="كلمة المرور الحالية" value={pw.currentPassword} onChange={(v)=>setPw({...pw,currentPassword:v})} show={showSecrets.current} onToggle={()=>setShowSecrets({...showSecrets,current:!showSecrets.current})} />
+          <PasswordField p={p} label="كلمة المرور الجديدة" value={pw.newPassword} onChange={(v)=>setPw({...pw,newPassword:v})} show={showSecrets.next} onToggle={()=>setShowSecrets({...showSecrets,next:!showSecrets.next})} />
+          <PasswordField p={p} label="أعد كتابة كلمة المرور" value={pw.confirmPassword} onChange={(v)=>setPw({...pw,confirmPassword:v})} show={showSecrets.confirm} onToggle={()=>setShowSecrets({...showSecrets,confirm:!showSecrets.confirm})} />
+          <CrunchBtn p={p} label="تغيير كلمة المرور" solid onClick={changePassword} />
+        </div>
+      </Panel>
+
+      <Panel p={p} padding={24}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12 }}>
+          <Tag p={p}>ACTIVE_SESSIONS</Tag>
+          <CrunchBtn p={p} label="إنهاء كل الجلسات" danger onClick={logoutAll} />
+        </div>
+        <div style={{ marginTop:14, display:"grid", gap:10 }}>
+          {!sessions.length && <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13 }}>لا توجد جلسات نشطة غير ظاهرة.</div>}
+          {sessions.map((s) => <div key={s.id} style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:12, alignItems:"center", padding:12, background:p.bg0, border:`1px solid ${s.current ? p.accent : p.border}` }}>
+            <div>
+              <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:18, color:p.fg, letterSpacing:".06em" }}>{s.deviceName} {s.current ? "· الجهاز الحالي" : ""}</div>
+              <div style={{ fontFamily:"'Space Mono', monospace", fontSize:9, color:p.dim, letterSpacing:".08em", marginTop:4 }}>IP: {s.ip} · METHOD: {s.method} · LAST: {new Date(s.lastSeenAt).toLocaleString()}</div>
+            </div>
+            <CrunchBtn p={p} label={s.current ? "إنهاء الحالية" : "إنهاء"} small danger onClick={() => revokeSession(s)} />
+          </div>)}
+        </div>
       </Panel>
     </div>
   </PageFrame>;
+}
+
+function PasswordField({ p, label, value, onChange, show, onToggle }) {
+  return <div>
+    <label style={{ display:"block", fontFamily:"'Space Mono', monospace", fontSize:10, color:p.accent, letterSpacing:".22em", marginBottom:6, textTransform:"uppercase" }}>▸ {label}</label>
+    <div style={{ display:"grid", gridTemplateColumns:"1fr 46px", gap:8 }}>
+      <input type={show ? "text" : "password"} value={value} onChange={(e)=>onChange(e.target.value)} style={{ width:"100%", background:p.bg0, border:`1px solid ${p.border}`, borderRight:`2px solid ${p.accent}`, color:p.fg, padding:"12px 14px", fontFamily:"'Inter', sans-serif", fontSize:14, outline:"none", direction:"ltr" }} />
+      <button type="button" onClick={onToggle} style={{ background:p.bg1, border:`1px solid ${p.border}`, color:show?p.accent:p.dim, cursor:"pointer", fontFamily:"'Space Mono', monospace" }}>{show ? "إخفاء" : "عين"}</button>
+    </div>
+  </div>;
 }
 
 function Modal({ p, onClose, title, code, warn, children }) {

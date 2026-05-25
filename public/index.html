@@ -157,9 +157,13 @@ function App() {
   const [loading, setLoading] = React.useState(false);
 
   function flashLoader() {
-    setLoading(true);
-    window.clearTimeout(window.__cmRouteLoaderTimer);
-    window.__cmRouteLoaderTimer = window.setTimeout(() => setLoading(false), 360);
+    window.clearTimeout(window.__cmRouteLoaderDelayTimer);
+    window.clearTimeout(window.__cmRouteLoaderHideTimer);
+    window.__cmRouteLoaderDelayTimer = window.setTimeout(() => setLoading(true), 280);
+    window.__cmRouteLoaderHideTimer = window.setTimeout(() => {
+      window.clearTimeout(window.__cmRouteLoaderDelayTimer);
+      setLoading(false);
+    }, 1200);
   }
 
   React.useEffect(() => {
@@ -181,10 +185,17 @@ function App() {
       window.removeEventListener("hashchange", onHash);
       window.removeEventListener("cm-auth-changed", onAuth);
       window.removeEventListener("pageshow", onAuth);
-      window.clearTimeout(window.__cmRouteLoaderTimer);
+      window.clearTimeout(window.__cmRouteLoaderDelayTimer);
+      window.clearTimeout(window.__cmRouteLoaderHideTimer);
       delete window.__cmNav;
     };
   }, []);
+
+  React.useEffect(() => {
+    window.clearTimeout(window.__cmRouteLoaderDelayTimer);
+    const t = window.setTimeout(() => setLoading(false), 90);
+    return () => window.clearTimeout(t);
+  }, [route]);
 
   React.useEffect(() => {
     if (PRIVATE_ROUTES.has(route) && !cmBrowserAuthed()) {

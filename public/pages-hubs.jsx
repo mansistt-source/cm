@@ -61,6 +61,7 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
   const [loading, setLoading] = React.useState(true);
   const [err, setErr] = React.useState("");
   const [showNew, setShowNew] = React.useState(false);
+  const [editProject, setEditProject] = React.useState(null);
   const [creating, setCreating] = React.useState(false);
   const [form, setForm] = React.useState({
     title: meta.newTitle,
@@ -110,6 +111,32 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
     }
   }
 
+
+  async function saveEditedProject(next) {
+    setErr("");
+    try {
+      const d = await hubApi(`/api/projects/${next.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: next.title, brief: next.brief || "" }),
+      });
+      setProjects(projects.map((x) => x.id === next.id ? d.project : x));
+      setEditProject(null);
+    } catch (e) {
+      setErr(e.message || "فشل تعديل المشروع");
+    }
+  }
+
+  async function deleteProject(project) {
+    if (!window.confirm(`حذف المشروع: ${project.title}؟`)) return;
+    setErr("");
+    try {
+      await hubApi(`/api/projects/${project.id}`, { method: "DELETE" });
+      setProjects(projects.filter((x) => x.id !== project.id));
+    } catch (e) {
+      setErr(e.message || "فشل حذف المشروع");
+    }
+  }
+
   const paid = projects.filter(x => x.paymentStatus === "paid").length;
   const delivered = projects.filter(x => x.status === "delivered").length;
   const active = projects.filter(x => ["pending_payment", "paid", "in_production"].includes(x.status)).length;
@@ -118,7 +145,7 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
     <AuthedNav p={p} current={meta.current} navigate={navigate} credits={credits} user={user} onLogout={() => hubLogout(navigate)} />
     <div style={{ padding: "32px", maxWidth: 1300, margin: "0 auto" }}>
       <SectionHead p={p} code={meta.code} title={meta.title} sub={meta.sub}
-        right={<CrunchBtn p={p} label="طلب جديد" solid icon="+" onClick={() => setShowNew(true)} />}
+        right={<CrunchBtn p={p} label="إنشاء مشروع" solid icon="+" onClick={() => setShowNew(true)} />}
       />
 
       {err && <div style={{ marginBottom: 14 }}><Toast p={p} type="error">{err}</Toast></div>}
@@ -136,25 +163,27 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
         <Reticle p={p} size={86} color={p.dim} />
         <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 30, color: p.fg, letterSpacing: ".06em", marginTop: 20 }}>لا توجد مشاريع بعد</div>
         <div style={{ color: p.dim, fontFamily: "'Inter', sans-serif", fontSize: 13, marginTop: 8 }}>أنشئ أول طلب، ثم ارفق الملفات وابدأ الدفع من صفحة المشروع.</div>
-        <div style={{ marginTop: 22 }}><CrunchBtn p={p} label="إنشاء أول طلب" solid icon="+" onClick={() => setShowNew(true)} /></div>
+        <div style={{ marginTop: 22 }}><CrunchBtn p={p} label="إنشاء أول مشروع" solid icon="+" onClick={() => setShowNew(true)} /></div>
       </Panel> : null}
 
       {!loading && projects.length ? <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
-        {projects.map(project => <HubProjectCard key={project.id} p={p} project={project} onOpen={() => openProject(project)} />)}
+        {projects.map(project => <HubProjectCard key={project.id} p={p} project={project} onOpen={() => openProject(project)} onEdit={() => setEditProject(project)} onDelete={() => deleteProject(project)} />)}
       </div> : null}
     </div>
 
-    {showNew && <Modal p={p} onClose={() => setShowNew(false)} title="طلب جديد" code={meta.code}>
+    {showNew && <Modal p={p} onClose={() => setShowNew(false)} title="مشروع جديد" code={meta.code}>
       <div style={{ display: "grid", gap: 12 }}>
         <TacticalInput p={p} label="اسم المشروع" value={form.title} onChange={(v) => setForm({ ...form, title: v })} placeholder={meta.newTitle} />
         <TacticalTextarea p={p} label="وصف مختصر" value={form.description} onChange={(v) => setForm({ ...form, description: v })} placeholder="اكتب وصف بسيط للمشروع. تفاصيل الخدمة، الباقة، الستايل، والمدة ستُضبط من داخل المشروع." rows={5} />
-        <Toast p={p}>سيتم إنشاء مساحة مشروع فقط. إعدادات الخدمة والدفع والستايل تظهر بعد فتح المشروع.</Toast>
-        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
           <CrunchBtn p={p} label="إلغاء" full onClick={() => setShowNew(false)} />
-          <CrunchBtn p={p} label={creating ? "جاري الإنشاء..." : "إنشاء الطلب"} solid full onClick={createProject} disabled={creating} />
+          <CrunchBtn p={p} label={creating ? "جاري الإنشاء..." : "إنشاء وفتح"} solid full onClick={createProject} disabled={creating} />
         </div>
       </div>
     </Modal>}
+
+
+    {editProject && <EditHubProjectModal p={p} project={editProject} onClose={() => setEditProject(null)} onSave={saveEditedProject} />}
   </PageFrame>;
 }
 
@@ -164,16 +193,36 @@ function HubStat({ p, label, value, accent }) {
     <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 40, color: accent ? p.accent : p.fg, lineHeight: 1, marginTop: 8 }}>{value}</div>
   </Panel>;
 }
-function HubProjectCard({ p, project, onOpen }) {
+function HubProjectCard({ p, project, onOpen, onEdit, onDelete }) {
   const color = project.status === "delivered" ? p.accent2 : project.paymentStatus === "paid" ? p.accent2 : project.status === "pending_payment" ? p.warn : p.accent;
   return <div onClick={onOpen} style={{ position: "relative", padding: 18, background: p.bg1, border: `1px solid ${p.border}`, cursor: "pointer", clipPath: "polygon(0 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%)" }}>
     <div style={{ position: "absolute", top: 0, left: 0, width: 60, height: 2, background: color }} />
     <Tag p={p} color={color}>{String(project.status || "draft").toUpperCase()}</Tag>
     <div style={{ marginTop: 14, fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, color: p.fg, letterSpacing: ".06em", lineHeight: 1.1 }}>{project.title}</div>
     <div style={{ marginTop: 8, fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".14em" }}>{project.serviceType} · {Number(project.priceUsd || 0) ? `$${project.priceUsd}` : 'بدون باقة'}</div>
-    <div style={{ marginTop: 16 }}><CrunchBtn p={p} label="فتح" small solid onClick={(e) => { e.stopPropagation(); onOpen(); }} /></div>
+    <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
+      <CrunchBtn p={p} label="فتح" small solid onClick={(e) => { e.stopPropagation(); onOpen(); }} />
+      <CrunchBtn p={p} label="تعديل" small onClick={(e) => { e.stopPropagation(); onEdit?.(); }} />
+      <CrunchBtn p={p} label="حذف" small danger onClick={(e) => { e.stopPropagation(); onDelete?.(); }} />
+    </div>
   </div>;
 }
+
+function EditHubProjectModal({ p, project, onClose, onSave }) {
+  const [title, setTitle] = React.useState(project.title || "");
+  const [brief, setBrief] = React.useState(project.brief || "");
+  return <Modal p={p} onClose={onClose} title="تعديل المشروع" code="// EDIT_PROJECT">
+    <div style={{ display: "grid", gap: 12 }}>
+      <TacticalInput p={p} label="اسم المشروع" value={title} onChange={setTitle} placeholder="اسم المشروع" />
+      <TacticalTextarea p={p} label="وصف مختصر" value={brief} onChange={setBrief} rows={4} placeholder="وصف مختصر للمشروع" />
+      <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+        <CrunchBtn p={p} label="إلغاء" full onClick={onClose} />
+        <CrunchBtn p={p} label="حفظ" solid full onClick={() => onSave({ ...project, title: title.trim(), brief: brief.trim() })} />
+      </div>
+    </div>
+  </Modal>;
+}
+
 function HubSelect({ p, label, value, onChange, options }) {
   return <div><label style={{ display:"block", fontFamily:"'Space Mono', monospace", fontSize:10, color:p.accent, letterSpacing:".22em", marginBottom:6, textTransform:"uppercase" }}>▸ {label}</label><select value={value} onChange={(e) => onChange(e.target.value)} style={{ width:"100%", background:p.bg0, border:`1px solid ${p.border}`, borderRight:`2px solid ${p.accent}`, color:p.fg, padding:"12px 14px", fontFamily:"'Inter', sans-serif", fontSize:13, outline:"none" }}>{options.map(([v,l]) => <option key={v} value={v}>{l}</option>)}</select></div>;
 }
