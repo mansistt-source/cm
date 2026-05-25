@@ -28,6 +28,18 @@ const ALLOW_DEV_2FA_CODE = String(process.env.ALLOW_DEV_2FA_CODE || '').trim().t
 const TWOFA_CODE_TTL_MS = 1000 * 60 * 10;
 const COOKIE_SECURE = process.env.NODE_ENV === 'production' ? '; Secure' : '';
 
+const APP_URL = (process.env.APP_URL || process.env.PUBLIC_APP_URL || '').replace(/\/$/, '');
+const PAYPAL_MODE = String(process.env.PAYPAL_MODE || 'sandbox').trim().toLowerCase();
+const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID || '';
+const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET || '';
+const MIN_TOPUP_USD = Number(process.env.MIN_TOPUP_USD || 30);
+const TOPUP_AMOUNTS_USD = (process.env.TOPUP_AMOUNTS_USD || '30,50,100,300,800,1500')
+  .split(',')
+  .map((x) => Number(String(x).trim()))
+  .filter((n) => Number.isFinite(n) && n >= MIN_TOPUP_USD);
+const EARLY_DYNAMIC_MARKUP = Number(process.env.EARLY_DYNAMIC_MARKUP || 1.65);
+const ESTIMATE_SAFETY_BUFFER_RATE = Number(process.env.ESTIMATE_SAFETY_BUFFER_RATE || 0.15);
+
 const PACKAGES = {
   starter: { key: 'starter', name: 'Starter', priceUsd: 150 },
   growth: { key: 'growth', name: 'Growth', priceUsd: 300 },
@@ -398,7 +410,7 @@ async function ensureData() {
   try {
     await stat(DB_FILE);
   } catch {
-    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [], sessions: [], twoFactorCodes: [], wallets: [], creditLedger: [], activityLog: [], subscriptions: [] }, null, 2));
+    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [], sessions: [], twoFactorCodes: [], wallets: [], creditLedger: [], activityLog: [], subscriptions: [], creditReservations: [] }, null, 2));
   }
 }
 
@@ -414,6 +426,7 @@ function normalizeDb(db) {
   db.creditLedger ||= [];
   db.activityLog ||= [];
   db.subscriptions ||= [];
+  db.creditReservations ||= [];
   db.users = db.users.map((u) => ({
     sessionVersion: 0,
     twoFactorEnabled: false,
@@ -517,13 +530,17 @@ function assertProjectOwnerOrAdmin(user, project) {
 }
 
 
-const CREDITS_PER_USD = Number(process.env.CREDITS_PER_USD || 100);
+const CREDITS_PER_USD = Number(process.env.CREDITS_PER_USD || 10);
 const ACTIVITY_LOG_LIMIT = Number(process.env.ACTIVITY_LOG_LIMIT || 5000);
 
 function publicWallet(wallet) {
+  const balanceCredits = Number(wallet.balanceCredits || 0);
+  const reservedCredits = Number(wallet.reservedCredits || 0);
   return {
     userId: wallet.userId,
-    balanceCredits: Number(wallet.balanceCredits || 0),
+    balanceCredits,
+    reservedCredits,
+    availableCredits: Math.max(0, balanceCredits - reservedCredits),
     lifetimePurchasedCredits: Number(wallet.lifetimePurchasedCredits || 0),
     lifetimeUsedCredits: Number(wallet.lifetimeUsedCredits || 0),
     updatedAt: wallet.updatedAt
@@ -534,7 +551,7 @@ function getWallet(db, userId) {
   db.wallets ||= [];
   let wallet = db.wallets.find((w) => w.userId === userId);
   if (!wallet) {
-    wallet = { userId, balanceCredits: 0, lifetimePurchasedCredits: 0, lifetimeUsedCredits: 0, createdAt: now(), updatedAt: now() };
+    wallet = { userId, balanceCredits: 0, reservedCredits: 0, lifetimePurchasedCredits: 0, lifetimeUsedCredits: 0, createdAt: now(), updatedAt: now() };
     db.wallets.push(wallet);
   }
   return wallet;
@@ -621,6 +638,328 @@ function paymentCredits(amountUsd) {
   return Math.max(0, Math.round(Number(amountUsd || 0) * CREDITS_PER_USD));
 }
 
+function money(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
+
+function creditsForUsd(amountUsd) {
+  return Math.max(0, Math.round(Number(amountUsd || 0) * CREDITS_PER_USD));
+}
+
+function topupPlans() {
+  const seen = new Set();
+  return TOPUP_AMOUNTS_USD
+    .filter((amount) => {
+      if (seen.has(amount)) return false;
+      seen.add(amount);
+      return true;
+    })
+    .sort((a, b) => a - b)
+    .map((amountUsd) => ({
+      key: `topup_${String(amountUsd).replace(/\./g, '_')}`,
+      amountUsd,
+      credits: creditsForUsd(amountUsd),
+      label: `$${amountUsd} = ${creditsForUsd(amountUsd)} credits`
+    }));
+}
+
+function findTopupPlan(planKey) {
+  return topupPlans().find((p) => p.key === planKey) || null;
+}
+
+function paypalApiBase() {
+  return PAYPAL_MODE === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+}
+
+async function paypalAccessToken() {
+  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) throw new Error('PayPal credentials are not configured');
+  const response = await fetch(`${paypalApiBase()}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64')}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: 'grant_type=client_credentials'
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) throw new Error(`PayPal token failed: ${JSON.stringify(data)}`);
+  return data.access_token;
+}
+
+async function createPayPalOrder({ amountUsd, customId }) {
+  const token = await paypalAccessToken();
+  const origin = APP_URL || '';
+  const payload = {
+    intent: 'CAPTURE',
+    purchase_units: [{
+      custom_id: customId,
+      description: 'Content Machine credits top-up',
+      amount: { currency_code: 'USD', value: money(amountUsd).toFixed(2) }
+    }],
+    application_context: {
+      brand_name: 'Content Machine',
+      user_action: 'PAY_NOW',
+      shipping_preference: 'NO_SHIPPING',
+      return_url: origin ? `${origin}/#/billing?paypal=approved` : undefined,
+      cancel_url: origin ? `${origin}/#/billing?paypal=cancelled` : undefined
+    }
+  };
+  const response = await fetch(`${paypalApiBase()}/v2/checkout/orders`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.id) throw new Error(`PayPal create order failed: ${JSON.stringify(data)}`);
+  return data;
+}
+
+async function capturePayPalOrder(paypalOrderId) {
+  const token = await paypalAccessToken();
+  const response = await fetch(`${paypalApiBase()}/v2/checkout/orders/${encodeURIComponent(paypalOrderId)}/capture`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`PayPal capture failed: ${JSON.stringify(data)}`);
+  return data;
+}
+
+function extractCapturedUsd(captureData) {
+  const captures = captureData?.purchase_units?.flatMap((u) => u?.payments?.captures || []) || [];
+  const completed = captures.find((c) => c.status === 'COMPLETED') || captures[0];
+  return {
+    captureId: completed?.id || '',
+    status: completed?.status || captureData?.status || '',
+    amountUsd: Number(completed?.amount?.value || 0)
+  };
+}
+
+function estimateOperationCredits(input = {}) {
+  const operationType = String(input.operationType || input.serviceType || input.type || 'custom').toLowerCase();
+  const quality = String(input.quality || input.styleQuality || input.tier || 'standard').toLowerCase();
+  const agentLevel = String(input.agentLevel || input.thinkingLevel || input.complexity || 'normal').toLowerCase();
+  const durationSeconds = Math.max(0, Number(input.durationSeconds || input.duration || 0));
+  const requestedVideoCount = Number(input.videoCount || input.count || 0);
+  const isVideoLike = /(video|film|reel|ugc|documentary|cinematic|youtube)/.test(operationType) || durationSeconds > 0;
+  const videoCount = Math.max(isVideoLike ? 1 : 0, Number.isFinite(requestedVideoCount) ? requestedVideoCount : 0);
+  const videoUnits15 = videoCount * Math.max(0, Math.ceil((durationSeconds || 15) / 15));
+  const imageCount = Math.max(0, Number(input.imageCount || input.images || 0));
+  const voiceMinutes = Math.max(0, Number(input.voiceMinutes || 0));
+  const researchLevel = String(input.researchLevel || 'none').toLowerCase();
+
+  // Internal cost model. User sees only credits range, not this breakdown.
+  const per15sUsd = quality === 'premium' ? 6 : quality === 'draft' || quality === 'fast' ? 3.5 : 5;
+  const providerUsd = money((videoUnits15 * per15sUsd) + (imageCount * 0.35) + (voiceMinutes * 0.8));
+  const agentUsdMap = { none: 0, light: 0.4, normal: 1.0, deep: 2.5, heavy: 3.5 };
+  const researchUsdMap = { none: 0, light: 0.5, normal: 1.25, deep: 2.5 };
+  const brainUsd = money((agentUsdMap[agentLevel] ?? agentUsdMap.normal) + (researchUsdMap[researchLevel] ?? 0));
+  const infrastructureUsd = money(Math.max(0.35, providerUsd * 0.08));
+  const internalCostUsd = money(providerUsd + brainUsd + infrastructureUsd);
+
+  // Platform quote before safety reserve. This includes platform operation margin.
+  let estimatedLowUsd = money(internalCostUsd * EARLY_DYNAMIC_MARKUP);
+  if (!isVideoLike) estimatedLowUsd = Math.max(2, estimatedLowUsd);
+  if (isVideoLike) estimatedLowUsd = Math.max(9, estimatedLowUsd);
+
+  const estimatedHighUsd = money(estimatedLowUsd * (1 + ESTIMATE_SAFETY_BUFFER_RATE));
+  const estimatedLowCredits = Math.max(1, Math.ceil((estimatedLowUsd * CREDITS_PER_USD) / 5) * 5);
+  const estimatedHighCredits = Math.max(estimatedLowCredits, Math.ceil((estimatedHighUsd * CREDITS_PER_USD) / 5) * 5);
+
+  return {
+    estimatedLowCredits,
+    estimatedHighCredits,
+    requiredCredits: estimatedHighCredits,
+    credits: estimatedHighCredits,
+    estimatedLowUsd: money(estimatedLowCredits / CREDITS_PER_USD),
+    estimatedHighUsd: money(estimatedHighCredits / CREDITS_PER_USD),
+    estimatedUsd: money(estimatedHighCredits / CREDITS_PER_USD),
+    unit: { creditsPerUsd: CREDITS_PER_USD, usdPerCredit: money(1 / CREDITS_PER_USD) },
+    priceMode: 'dynamic_reserve_v2',
+    explanation: 'The system reserves the high estimate before execution, then charges the actual final cost and releases the unused reserve.',
+    formula: {
+      operationType,
+      quality,
+      agentLevel,
+      researchLevel,
+      durationSeconds: durationSeconds || (isVideoLike ? 15 : 0),
+      videoCount,
+      videoUnits15,
+      imageCount,
+      voiceMinutes,
+      safetyBufferRate: ESTIMATE_SAFETY_BUFFER_RATE
+    },
+    internalBreakdown: {
+      providerUsd,
+      brainUsd,
+      infrastructureUsd,
+      internalCostUsd,
+      estimatedLowUsd,
+      estimatedHighUsd
+    }
+  };
+}
+
+function ledgerEntryOnly(db, { userId, projectId = null, reservationId = null, paymentId = null, type, deltaCredits = 0, reason = '', metadata = {}, req = null, sessionId = null }) {
+  db.creditLedger ||= [];
+  const wallet = getWallet(db, userId);
+  const entry = {
+    id: id('credit'),
+    userId,
+    projectId,
+    reservationId,
+    paymentId,
+    type,
+    deltaCredits: Number(deltaCredits || 0),
+    balanceAfter: Number(wallet.balanceCredits || 0),
+    reservedAfter: Number(wallet.reservedCredits || 0),
+    availableAfter: Math.max(0, Number(wallet.balanceCredits || 0) - Number(wallet.reservedCredits || 0)),
+    reason: String(reason || '').slice(0, 260),
+    metadata: sanitizeMeta(metadata),
+    sessionId,
+    ip: req ? clientIp(req) : '',
+    createdAt: now()
+  };
+  db.creditLedger.push(entry);
+  pushActivity(db, {
+    userId,
+    sessionId,
+    action: `credits.${type}`,
+    entityType: projectId ? 'project' : 'wallet',
+    entityId: projectId || userId,
+    summary: `${type}: ${entry.deltaCredits} credits`,
+    metadata: { reservationId, paymentId, deltaCredits: entry.deltaCredits, balanceAfter: entry.balanceAfter, reservedAfter: entry.reservedAfter, ...sanitizeMeta(metadata) },
+    req
+  });
+  return entry;
+}
+
+function reserveOperationCredits(db, { userId, projectId = null, estimate, input = {}, req = null, sessionId = null }) {
+  db.creditReservations ||= [];
+  const wallet = getWallet(db, userId);
+  const requiredCredits = requirePositiveCredits(estimate?.requiredCredits || estimate?.estimatedHighCredits || estimate?.credits);
+  if (!requiredCredits) throw new Error('Could not calculate reservation credits');
+  const availableCredits = Math.max(0, Number(wallet.balanceCredits || 0) - Number(wallet.reservedCredits || 0));
+  if (availableCredits < requiredCredits) {
+    const err = new Error('Not enough available credits for this operation');
+    err.code = 'insufficient_credits';
+    err.requiredCredits = requiredCredits;
+    err.availableCredits = availableCredits;
+    throw err;
+  }
+  wallet.reservedCredits = Number(wallet.reservedCredits || 0) + requiredCredits;
+  wallet.updatedAt = now();
+  const reservation = {
+    id: id('reservation'),
+    userId,
+    projectId,
+    status: 'reserved',
+    input: sanitizeMeta(input),
+    estimate: sanitizeMeta(estimate),
+    estimatedLowCredits: Number(estimate.estimatedLowCredits || 0),
+    estimatedHighCredits: Number(estimate.estimatedHighCredits || requiredCredits),
+    reservedCredits: requiredCredits,
+    actualCredits: null,
+    chargedCredits: 0,
+    refundedCredits: 0,
+    createdAt: now(),
+    updatedAt: now()
+  };
+  db.creditReservations.push(reservation);
+  const entry = ledgerEntryOnly(db, {
+    userId,
+    projectId,
+    reservationId: reservation.id,
+    type: 'reservation_created',
+    deltaCredits: 0,
+    reason: 'Reserved credits for operation maximum estimate',
+    metadata: { reservedCredits: requiredCredits, estimate },
+    req,
+    sessionId
+  });
+  return { reservation, wallet, entry };
+}
+
+function finalizeOperationReservation(db, { reservationId, actualCredits, actualUsd = null, req = null, sessionId = null }) {
+  db.creditReservations ||= [];
+  const reservation = db.creditReservations.find((r) => r.id === reservationId);
+  if (!reservation) {
+    const err = new Error('Reservation not found');
+    err.code = 'reservation_not_found';
+    throw err;
+  }
+  if (reservation.status !== 'reserved') {
+    const err = new Error(`Reservation is already ${reservation.status}`);
+    err.code = 'reservation_not_open';
+    throw err;
+  }
+  const wallet = getWallet(db, reservation.userId);
+  const reserved = Number(reservation.reservedCredits || 0);
+  let actual = requirePositiveCredits(actualCredits || 0);
+  if (!actual && actualUsd !== null && actualUsd !== undefined) actual = creditsForUsd(Number(actualUsd || 0));
+  if (!actual) actual = requirePositiveCredits(reservation.estimatedLowCredits || reserved);
+  const charged = Math.min(reserved, actual);
+  const refunded = Math.max(0, reserved - charged);
+  wallet.reservedCredits = Math.max(0, Number(wallet.reservedCredits || 0) - reserved);
+  wallet.balanceCredits = Math.max(0, Number(wallet.balanceCredits || 0) - charged);
+  wallet.lifetimeUsedCredits = Number(wallet.lifetimeUsedCredits || 0) + charged;
+  wallet.updatedAt = now();
+  reservation.status = 'finalized';
+  reservation.actualCredits = actual;
+  reservation.chargedCredits = charged;
+  reservation.refundedCredits = refunded;
+  reservation.finalizedAt = now();
+  reservation.updatedAt = now();
+  const entry = ledgerEntryOnly(db, {
+    userId: reservation.userId,
+    projectId: reservation.projectId,
+    reservationId: reservation.id,
+    type: 'operation_finalized',
+    deltaCredits: -charged,
+    reason: 'Final operation charge after actual cost calculation',
+    metadata: { actualCredits: actual, chargedCredits: charged, refundedCredits: refunded, reservedCredits: reserved, actualUsd },
+    req,
+    sessionId
+  });
+  return { reservation, wallet, entry };
+}
+
+function refundOperationReservation(db, { reservationId, reason = 'Operation cancelled or failed', req = null, sessionId = null }) {
+  db.creditReservations ||= [];
+  const reservation = db.creditReservations.find((r) => r.id === reservationId);
+  if (!reservation) {
+    const err = new Error('Reservation not found');
+    err.code = 'reservation_not_found';
+    throw err;
+  }
+  if (reservation.status !== 'reserved') {
+    const err = new Error(`Reservation is already ${reservation.status}`);
+    err.code = 'reservation_not_open';
+    throw err;
+  }
+  const wallet = getWallet(db, reservation.userId);
+  const reserved = Number(reservation.reservedCredits || 0);
+  wallet.reservedCredits = Math.max(0, Number(wallet.reservedCredits || 0) - reserved);
+  wallet.updatedAt = now();
+  reservation.status = 'refunded';
+  reservation.refundedCredits = reserved;
+  reservation.updatedAt = now();
+  reservation.refundedAt = now();
+  reservation.refundReason = String(reason || '').slice(0, 260);
+  const entry = ledgerEntryOnly(db, {
+    userId: reservation.userId,
+    projectId: reservation.projectId,
+    reservationId: reservation.id,
+    type: 'reservation_released',
+    deltaCredits: 0,
+    reason,
+    metadata: { releasedCredits: reserved },
+    req,
+    sessionId
+  });
+  return { reservation, wallet, entry };
+}
+
 function requirePositiveCredits(value) {
   const n = Number(value || 0);
   if (!Number.isFinite(n) || n <= 0) return 0;
@@ -678,6 +1017,214 @@ async function handleApi(req, res, url) {
 
   if (method === 'GET' && pathname === '/api/packages') {
     json(res, 200, { packages: packageList() });
+    return true;
+  }
+
+
+  if (method === 'GET' && pathname === '/api/billing/plans') {
+    json(res, 200, {
+      creditsPerUsd: CREDITS_PER_USD,
+      minTopupUsd: MIN_TOPUP_USD,
+      plans: topupPlans(),
+      note: '1 USD = 10 credits. Credits are the only customer-facing currency inside the platform.'
+    });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/pricing/estimate') {
+    const body = await readBody(req);
+    json(res, 200, { estimate: estimateOperationCredits(body) });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/operations/estimate') {
+    const body = await readBody(req);
+    const estimate = estimateOperationCredits(body);
+    json(res, 200, { estimate });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/projects/:id/operations/estimate');
+  if (params && method === 'POST') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const body = await readBody(req);
+    const db = await loadDb();
+    const project = db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const estimate = estimateOperationCredits({
+      serviceType: body.serviceType || project.serviceType,
+      operationType: body.operationType || body.operation || project.serviceType,
+      durationSeconds: body.durationSeconds || project.durationSeconds,
+      quality: body.quality || project.style || 'standard',
+      videoCount: body.videoCount || 1,
+      imageCount: body.imageCount || 0,
+      voiceMinutes: body.voiceMinutes || 0,
+      agentLevel: body.agentLevel || 'normal',
+      researchLevel: body.researchLevel || 'none'
+    });
+    json(res, 200, { estimate, wallet: publicWallet(getWallet(db, project.userId)) });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/projects/:id/operations/reserve');
+  if (params && method === 'POST') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const body = await readBody(req);
+    const project = ctx.db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const estimate = estimateOperationCredits({
+      serviceType: body.serviceType || project.serviceType,
+      operationType: body.operationType || body.operation || project.serviceType,
+      durationSeconds: body.durationSeconds || project.durationSeconds,
+      quality: body.quality || project.style || 'standard',
+      videoCount: body.videoCount || 1,
+      imageCount: body.imageCount || 0,
+      voiceMinutes: body.voiceMinutes || 0,
+      agentLevel: body.agentLevel || 'normal',
+      researchLevel: body.researchLevel || 'none'
+    });
+    let result;
+    try {
+      result = reserveOperationCredits(ctx.db, { userId: project.userId, projectId: project.id, estimate, input: body, req, sessionId: ctx.session?.id });
+    } catch (error) {
+      if (error.code === 'insufficient_credits') {
+        return fail(res, 402, 'insufficient_credits', `You need at least ${error.requiredCredits} available credits. Available: ${error.availableCredits}`);
+      }
+      return fail(res, 400, 'reservation_failed', error.message || 'Could not reserve credits');
+    }
+    project.updatedAt = now();
+    await saveDb(ctx.db);
+    json(res, 200, { reservation: result.reservation, estimate, wallet: publicWallet(result.wallet) });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/projects/:id/operations');
+  if (params && method === 'GET') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const db = await loadDb();
+    const project = db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const reservations = (db.creditReservations || []).filter((r) => r.projectId === project.id).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    json(res, 200, { reservations });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/operations/:id/finalize');
+  if (params && method === 'POST') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    if (ctx.user.role !== 'admin') return fail(res, 403, 'forbidden', 'Admin only until internal executors are enabled');
+    const body = await readBody(req);
+    let result;
+    try {
+      result = finalizeOperationReservation(ctx.db, { reservationId: params.id, actualCredits: body.actualCredits, actualUsd: body.actualUsd, req, sessionId: ctx.session?.id });
+    } catch (error) {
+      return fail(res, error.code === 'reservation_not_found' ? 404 : 400, error.code || 'finalize_failed', error.message || 'Could not finalize reservation');
+    }
+    await saveDb(ctx.db);
+    json(res, 200, { reservation: result.reservation, wallet: publicWallet(result.wallet), entry: result.entry });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/operations/:id/refund');
+  if (params && method === 'POST') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    if (ctx.user.role !== 'admin') return fail(res, 403, 'forbidden', 'Admin only until internal executors are enabled');
+    const body = await readBody(req);
+    let result;
+    try {
+      result = refundOperationReservation(ctx.db, { reservationId: params.id, reason: body.reason || 'Operation cancelled or failed', req, sessionId: ctx.session?.id });
+    } catch (error) {
+      return fail(res, error.code === 'reservation_not_found' ? 404 : 400, error.code || 'refund_failed', error.message || 'Could not refund reservation');
+    }
+    await saveDb(ctx.db);
+    json(res, 200, { reservation: result.reservation, wallet: publicWallet(result.wallet), entry: result.entry });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/billing/paypal/create-order') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const body = await readBody(req);
+    const plan = findTopupPlan(String(body.planKey || ''));
+    if (!plan) return fail(res, 400, 'bad_topup_plan', 'Choose a valid credit top-up plan');
+    let paypalOrder;
+    try {
+      paypalOrder = await createPayPalOrder({ amountUsd: plan.amountUsd, customId: `${ctx.user.id}:${plan.key}:${Date.now()}` });
+    } catch (error) {
+      return fail(res, 502, 'paypal_create_failed', error.message || 'PayPal create order failed');
+    }
+    const approvalUrl = (paypalOrder.links || []).find((l) => l.rel === 'approve')?.href || '';
+    const payment = {
+      id: id('payment'),
+      userId: ctx.user.id,
+      projectId: null,
+      type: 'wallet_topup',
+      provider: 'paypal',
+      providerOrderId: paypalOrder.id,
+      planKey: plan.key,
+      amountUsd: plan.amountUsd,
+      credits: plan.credits,
+      status: 'pending',
+      approvalUrl,
+      createdAt: now(),
+      updatedAt: now()
+    };
+    ctx.db.payments.push(payment);
+    pushActivity(ctx.db, { userId: ctx.user.id, sessionId: ctx.session?.id, action: 'billing.paypal_order_created', entityType: 'payment', entityId: payment.id, summary: `PayPal top-up created: ${plan.credits} credits`, metadata: { amountUsd: plan.amountUsd, credits: plan.credits, paypalOrderId: paypalOrder.id }, req });
+    await saveDb(ctx.db);
+    json(res, 200, { payment, paypalOrderId: paypalOrder.id, approvalUrl });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/billing/paypal/capture-order') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const body = await readBody(req);
+    const paypalOrderId = String(body.paypalOrderId || body.orderID || body.orderId || '').trim();
+    if (!paypalOrderId) return fail(res, 400, 'paypal_order_required', 'PayPal order ID is required');
+    const payment = (ctx.db.payments || []).find((p) => p.provider === 'paypal' && p.providerOrderId === paypalOrderId && p.userId === ctx.user.id);
+    if (!payment) return fail(res, 404, 'payment_not_found', 'Payment record not found');
+    if (payment.status === 'paid') {
+      json(res, 200, { payment, wallet: publicWallet(getWallet(ctx.db, ctx.user.id)), alreadyCaptured: true });
+      return true;
+    }
+    let captureData;
+    try {
+      captureData = await capturePayPalOrder(paypalOrderId);
+    } catch (error) {
+      return fail(res, 502, 'paypal_capture_failed', error.message || 'PayPal capture failed');
+    }
+    const captured = extractCapturedUsd(captureData);
+    if (captured.status !== 'COMPLETED') return fail(res, 402, 'paypal_not_completed', `PayPal status is ${captured.status || 'unknown'}`);
+    if (captured.amountUsd + 0.001 < Number(payment.amountUsd || 0)) return fail(res, 402, 'paypal_amount_mismatch', 'PayPal captured amount is lower than expected');
+    payment.status = 'paid';
+    payment.providerCaptureId = captured.captureId;
+    payment.rawCapture = captureData;
+    payment.updatedAt = now();
+    if (!payment.creditsAwarded) {
+      addCreditLedger(ctx.db, {
+        userId: ctx.user.id,
+        paymentId: payment.id,
+        type: 'purchase',
+        deltaCredits: Number(payment.credits || 0),
+        reason: `Wallet top-up ${payment.planKey}`,
+        metadata: { amountUsd: payment.amountUsd, provider: 'paypal', paypalOrderId, captureId: captured.captureId },
+        req,
+        sessionId: ctx.session?.id
+      });
+      payment.creditsAwarded = true;
+    }
+    pushActivity(ctx.db, { userId: ctx.user.id, sessionId: ctx.session?.id, action: 'billing.paypal_captured', entityType: 'payment', entityId: payment.id, summary: `Wallet topped up: ${payment.credits} credits`, metadata: { amountUsd: payment.amountUsd, credits: payment.credits }, req });
+    await saveDb(ctx.db);
+    json(res, 200, { payment, wallet: publicWallet(getWallet(ctx.db, ctx.user.id)) });
     return true;
   }
 
@@ -1175,6 +1722,30 @@ async function handleApi(req, res, url) {
   }
 
 
+  params = routeMatch(pathname, '/api/projects/:id/credits/estimate');
+  if (params && method === 'POST') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const body = await readBody(req);
+    const db = await loadDb();
+    const project = db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const estimate = estimateOperationCredits({
+      serviceType: body.serviceType || project.serviceType,
+      operationType: body.operationType || body.operation || project.serviceType,
+      durationSeconds: body.durationSeconds || project.durationSeconds,
+      quality: body.quality || project.style || 'standard',
+      videoCount: body.videoCount || 1,
+      imageCount: body.imageCount || 0,
+      voiceMinutes: body.voiceMinutes || 0,
+      agentLevel: body.agentLevel || 'normal',
+      researchLevel: body.researchLevel || 'none'
+    });
+    json(res, 200, { estimate, wallet: publicWallet(getWallet(db, project.userId)) });
+    return true;
+  }
+
   params = routeMatch(pathname, '/api/projects/:id/credits/consume');
   if (params && method === 'POST') {
     const user = await requireUser(req, res);
@@ -1184,17 +1755,29 @@ async function handleApi(req, res, url) {
     const project = db.projects.find((p) => p.id === params.id);
     if (!project) return notFound(res);
     if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
-    const credits = requirePositiveCredits(body.credits || body.amountCredits);
-    if (!credits) return fail(res, 400, 'bad_credits', 'A positive credits amount is required');
+    const explicitCredits = requirePositiveCredits(body.credits || body.amountCredits);
+    const estimate = estimateOperationCredits({
+      serviceType: body.serviceType || project.serviceType,
+      operationType: body.operationType || body.operation || project.serviceType,
+      durationSeconds: body.durationSeconds || project.durationSeconds,
+      quality: body.quality || project.style || 'standard',
+      videoCount: body.videoCount || 1,
+      imageCount: body.imageCount || 0,
+      voiceMinutes: body.voiceMinutes || 0,
+      agentLevel: body.agentLevel || 'normal',
+      researchLevel: body.researchLevel || 'none'
+    });
+    const credits = user.role === 'admin' && explicitCredits ? explicitCredits : estimate.credits;
+    if (!credits) return fail(res, 400, 'bad_credits', 'Could not estimate operation credits');
     const wallet = getWallet(db, project.userId);
-    if (Number(wallet.balanceCredits || 0) < credits) return fail(res, 402, 'insufficient_credits', 'Not enough credits');
+    if (Math.max(0, Number(wallet.balanceCredits || 0) - Number(wallet.reservedCredits || 0)) < credits) return fail(res, 402, 'insufficient_credits', 'Not enough available credits');
     const { entry } = addCreditLedger(db, {
       userId: project.userId,
       projectId: project.id,
       type: 'generation_used',
       deltaCredits: -credits,
       reason: String(body.reason || 'Project generation usage'),
-      metadata: { provider: body.provider || '', operation: body.operation || '', projectTitle: project.title },
+      metadata: { provider: body.provider || '', operation: body.operation || '', projectTitle: project.title, estimate: estimate || null },
       req
     });
     project.updatedAt = now();
@@ -1402,6 +1985,7 @@ async function handleApi(req, res, url) {
       project.creditsAdded = creditsAdded;
     }
     db.subscriptions ||= [];
+  db.creditReservations ||= [];
     if (project.packageKey) {
       db.subscriptions.push({
         id: id('subscription'), userId: project.userId, projectId: project.id, packageKey: project.packageKey,
