@@ -64,10 +64,7 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
   const [creating, setCreating] = React.useState(false);
   const [form, setForm] = React.useState({
     title: meta.newTitle,
-    packageKey: "starter",
-    style: tool === "film" ? "cinematic" : "campaign",
-    durationSeconds: tool === "film" ? 30 : 15,
-    brief: "",
+    description: "",
   });
 
   async function load() {
@@ -92,7 +89,6 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
   async function createProject() {
     setErr("");
     if (!form.title.trim()) { setErr("اكتب اسم المشروع"); return; }
-    if (!form.brief.trim()) { setErr("اكتب brief قصير للمشروع"); return; }
     setCreating(true);
     try {
       const d = await hubApi("/api/projects", {
@@ -100,10 +96,7 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
         body: JSON.stringify({
           title: form.title.trim(),
           serviceType: meta.serviceType,
-          packageKey: form.packageKey,
-          brief: form.brief.trim(),
-          style: form.style,
-          durationSeconds: Number(form.durationSeconds) || 15,
+          brief: form.description.trim(),
         }),
       });
       const project = d.project;
@@ -154,12 +147,8 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
     {showNew && <Modal p={p} onClose={() => setShowNew(false)} title="طلب جديد" code={meta.code}>
       <div style={{ display: "grid", gap: 12 }}>
         <TacticalInput p={p} label="اسم المشروع" value={form.title} onChange={(v) => setForm({ ...form, title: v })} placeholder={meta.newTitle} />
-        <TacticalTextarea p={p} label="Brief" value={form.brief} onChange={(v) => setForm({ ...form, brief: v })} placeholder={meta.briefPlaceholder} rows={5} />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-          <HubSelect p={p} label="الباقة" value={form.packageKey} onChange={(v) => setForm({ ...form, packageKey: v })} options={[["starter","Starter · $150"],["growth","Growth · $300"],["pro","Pro · $800"],["agency","Agency · $1500"]]} />
-          <HubSelect p={p} label="الستايل" value={form.style} onChange={(v) => setForm({ ...form, style: v })} options={tool === "film" ? [["cinematic","Cinematic"],["realistic","Realistic"],["anime","Anime"],["luxury","Luxury"],["3d","3D"]] : [["campaign","Campaign"],["ugc","UGC"],["trend","Trend"],["content_plan","Content Plan"]]} />
-          <TacticalInput p={p} label="المدة/الثواني" type="number" value={String(form.durationSeconds)} onChange={(v) => setForm({ ...form, durationSeconds: v })} rtl={false} />
-        </div>
+        <TacticalTextarea p={p} label="وصف مختصر" value={form.description} onChange={(v) => setForm({ ...form, description: v })} placeholder="اكتب وصف بسيط للمشروع. تفاصيل الخدمة، الباقة، الستايل، والمدة ستُضبط من داخل المشروع." rows={5} />
+        <Toast p={p}>سيتم إنشاء مساحة مشروع فقط. إعدادات الخدمة والدفع والستايل تظهر بعد فتح المشروع.</Toast>
         <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
           <CrunchBtn p={p} label="إلغاء" full onClick={() => setShowNew(false)} />
           <CrunchBtn p={p} label={creating ? "جاري الإنشاء..." : "إنشاء الطلب"} solid full onClick={createProject} disabled={creating} />
@@ -181,7 +170,7 @@ function HubProjectCard({ p, project, onOpen }) {
     <div style={{ position: "absolute", top: 0, left: 0, width: 60, height: 2, background: color }} />
     <Tag p={p} color={color}>{String(project.status || "draft").toUpperCase()}</Tag>
     <div style={{ marginTop: 14, fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, color: p.fg, letterSpacing: ".06em", lineHeight: 1.1 }}>{project.title}</div>
-    <div style={{ marginTop: 8, fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".14em" }}>{project.serviceType} · ${project.priceUsd}</div>
+    <div style={{ marginTop: 8, fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".14em" }}>{project.serviceType} · {Number(project.priceUsd || 0) ? `$${project.priceUsd}` : 'بدون باقة'}</div>
     <div style={{ marginTop: 16 }}><CrunchBtn p={p} label="فتح" small solid onClick={(e) => { e.stopPropagation(); onOpen(); }} /></div>
   </div>;
 }

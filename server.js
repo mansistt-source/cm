@@ -577,19 +577,19 @@ async function handleApi(req, res, url) {
     const user = await requireUser(req, res);
     if (!user) return true;
     const body = await readBody(req);
-    const packageKey = String(body.packageKey || 'starter');
-    const pack = PACKAGES[packageKey];
-    if (!pack) return fail(res, 400, 'bad_package', 'Unknown package');
+    const packageKey = String(body.packageKey || '').trim();
+    const pack = packageKey ? PACKAGES[packageKey] : null;
+    if (packageKey && !pack) return fail(res, 400, 'bad_package', 'Unknown package');
     const serviceType = String(body.serviceType || 'service_agent');
     if (!SERVICE_TYPES.has(serviceType)) return fail(res, 400, 'bad_service_type', 'Unknown service type');
     const db = await loadDb();
     const project = {
       id: id('project'),
       userId: user.id,
-      title: String(body.title || `${pack.name} Project`).slice(0, 120),
+      title: String(body.title || 'Untitled Project').slice(0, 120),
       serviceType,
-      packageKey,
-      priceUsd: pack.priceUsd,
+      packageKey: pack ? packageKey : '',
+      priceUsd: pack ? pack.priceUsd : 0,
       brief: String(body.brief || ''),
       style: String(body.style || ''),
       durationSeconds: Number(body.durationSeconds || 0),
@@ -635,6 +635,20 @@ async function handleApi(req, res, url) {
     if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
     if (body.title !== undefined) project.title = String(body.title).slice(0, 120);
     if (body.brief !== undefined) project.brief = String(body.brief);
+    if (body.serviceType !== undefined) {
+      const nextServiceType = String(body.serviceType || 'service_agent');
+      if (!SERVICE_TYPES.has(nextServiceType)) return fail(res, 400, 'bad_service_type', 'Unknown service type');
+      project.serviceType = nextServiceType;
+    }
+    if (body.packageKey !== undefined) {
+      const nextPackageKey = String(body.packageKey || '').trim();
+      const nextPack = nextPackageKey ? PACKAGES[nextPackageKey] : null;
+      if (nextPackageKey && !nextPack) return fail(res, 400, 'bad_package', 'Unknown package');
+      project.packageKey = nextPack ? nextPackageKey : '';
+      project.priceUsd = nextPack ? nextPack.priceUsd : 0;
+      if (project.paymentStatus !== 'paid') project.paymentStatus = 'unpaid';
+      if (project.status === 'pending_payment') project.status = 'draft';
+    }
     if (body.style !== undefined) project.style = String(body.style);
     if (body.durationSeconds !== undefined) project.durationSeconds = Number(body.durationSeconds || 0);
     project.updatedAt = now();
@@ -651,6 +665,10 @@ async function handleApi(req, res, url) {
     const project = db.projects.find((p) => p.id === params.id);
     if (!project) return notFound(res);
     if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const pack = project.packageKey ? PACKAGES[project.packageKey] : null;
+    if (!pack || !Number(project.priceUsd || 0)) {
+      return fail(res, 400, 'package_required', 'Choose a package inside the project before checkout');
+    }
     project.status = 'pending_payment';
     project.paymentStatus = 'pending';
     project.updatedAt = now();

@@ -12,7 +12,7 @@ function projLogout(navigate) { fetch("/api/auth/logout", { method:"POST", heade
 function projStatusLabel(s) { return ({ draft:"DRAFT", pending_payment:"PAYMENT", paid:"PAID", in_production:"PRODUCTION", delivered:"DELIVERED", cancelled:"CANCELLED", failed:"FAILED" })[s] || String(s || "").toUpperCase(); }
 function projStatusColor(p, s) { return ({ draft:p.dim, pending_payment:p.warn, paid:p.accent2, in_production:p.accent, delivered:p.accent2, cancelled:p.warn, failed:p.warn })[s] || p.dim; }
 function projServiceLabel(s) { return ({ film_maker:"صانع الأفلام", marketing_agent:"وكيل التسويق", service_agent:"وكيل الخدمة", youtube_documentary:"وثائقي يوتيوب", ugc_avatar:"أفاتار UGC" })[s] || s || "مشروع"; }
-function packageName(k) { return ({ starter:"Starter", growth:"Growth", pro:"Pro", agency:"Agency" })[k] || k; }
+function packageName(k) { return ({ starter:"Starter", growth:"Growth", pro:"Pro", agency:"Agency" })[k] || "غير محدد"; }
 function fileToBase64(file) { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || "").split(",")[1] || ""); r.onerror = reject; r.readAsDataURL(file); }); }
 async function authDownload(url, fileName) {
   const res = await fetch(url, { headers: projToken() ? { Authorization:`Bearer ${projToken()}` } : {} });
@@ -89,8 +89,8 @@ function ProjectCardConnected({ p, project, onOpen }) {
     <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:24, color:p.fg, letterSpacing:".06em", lineHeight:1.2, minHeight:56 }}>{project.title}</div>
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:14, paddingTop:12, borderTop:`1px dashed ${p.border}` }}>
       <MiniConnected p={p} l="SERVICE" v={projServiceLabel(project.serviceType)} mono />
-      <MiniConnected p={p} l="PACKAGE" v={packageName(project.packageKey)} />
-      <MiniConnected p={p} l="PRICE" v={`$${project.priceUsd}`} accent />
+      <MiniConnected p={p} l="PACKAGE" v={project.packageKey ? packageName(project.packageKey) : "غير محدد"} />
+      <MiniConnected p={p} l="PRICE" v={Number(project.priceUsd || 0) ? `$${project.priceUsd}` : "بعد الاختيار"} accent />
       <MiniConnected p={p} l="PAYMENT" v={String(project.paymentStatus || "").toUpperCase()} mono />
     </div>
     <div style={{ marginTop:14 }}><CrunchBtn p={p} label="فتح ←" solid small /></div>
@@ -100,11 +100,7 @@ function MiniConnected({ p, l, v, accent, mono }) { return <div><div style={{ fo
 
 function NewProjectModalConnected({ p, packages, onClose, onCreated }) {
   const [title, setTitle] = React.useState("");
-  const [serviceType, setServiceType] = React.useState("film_maker");
-  const [packageKey, setPackageKey] = React.useState("starter");
-  const [style, setStyle] = React.useState("cinematic");
-  const [durationSeconds, setDurationSeconds] = React.useState(30);
-  const [brief, setBrief] = React.useState("");
+  const [description, setDescription] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState("");
   async function create() {
@@ -112,21 +108,23 @@ function NewProjectModalConnected({ p, packages, onClose, onCreated }) {
     if (!title.trim()) { setErr("اكتب اسم المشروع"); return; }
     setLoading(true);
     try {
-      const data = await projApi("/api/projects", { method:"POST", body: JSON.stringify({ title, serviceType, packageKey, brief, style, durationSeconds:Number(durationSeconds || 0) }) });
+      const data = await projApi("/api/projects", {
+        method:"POST",
+        body: JSON.stringify({
+          title: title.trim(),
+          brief: description.trim(),
+          serviceType: "service_agent"
+        })
+      });
       onCreated(data.project);
     } catch(e) { setErr(e.message); }
     finally { setLoading(false); }
   }
-  const pack = (packages || []).find(x => x.key === packageKey);
-  return <Modal p={p} onClose={onClose} title="مشروع جديد" code="// NEW_ORDER">
+  return <Modal p={p} onClose={onClose} title="مشروع جديد" code="// NEW_PROJECT">
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
       <TacticalInput p={p} label="اسم المشروع" value={title} onChange={setTitle} placeholder="مثال: حملة إطلاق العطر" />
-      <FormSelect p={p} label="نوع الخدمة" value={serviceType} onChange={setServiceType} options={[ ["film_maker","صانع الأفلام"], ["marketing_agent","وكيل التسويق"], ["youtube_documentary","وثائقي يوتيوب"], ["ugc_avatar","أفاتار UGC"], ["service_agent","وكيل الخدمة"] ]} />
-      <FormSelect p={p} label="الباقة" value={packageKey} onChange={setPackageKey} options={(packages && packages.length ? packages : [{key:"starter",priceUsd:150},{key:"growth",priceUsd:300},{key:"pro",priceUsd:800},{key:"agency",priceUsd:1500}]).map(x => [x.key, `${packageName(x.key)} · $${x.priceUsd}`])} />
-      <TacticalInput p={p} label="الستايل" value={style} onChange={setStyle} placeholder="cinematic / realistic / luxury" rtl={false} />
-      <TacticalInput p={p} label="المدة بالثواني" value={durationSeconds} onChange={setDurationSeconds} type="number" rtl={false} />
-      <TacticalTextarea p={p} label="البرومبت / البريف" value={brief} onChange={setBrief} rows={4} placeholder="اكتب المطلوب من العميل هنا" />
-      {pack && <Toast p={p}>سيتم إنشاء طلب بقيمة ${pack.priceUsd}. الدفع يتم من صفحة المشروع.</Toast>}
+      <TacticalTextarea p={p} label="وصف مختصر" value={description} onChange={setDescription} rows={4} placeholder="اكتب وصف بسيط فقط. نوع الخدمة، الباقة، الستايل، والمدة ستُضبط من داخل صفحة المشروع." />
+      <Toast p={p}>هذا ينشئ مساحة مشروع فقط. لا يتم اختيار باقة أو دفع أو ستايل في هذه النافذة.</Toast>
       {err && <Toast p={p} type="error">{err}</Toast>}
       <div style={{ display:"flex", gap:10, marginTop:6 }}><CrunchBtn p={p} label="إلغاء" full onClick={onClose} /><CrunchBtn p={p} label={loading?"جاري الإنشاء...":"إنشاء وفتح"} solid icon="▶" full onClick={create} disabled={loading} /></div>
     </div>
@@ -155,12 +153,12 @@ function ProjectDetailPage({ p, navigate, projectId }) {
     finally { setLoading(false); }
   }
   React.useEffect(() => { load(); }, [effectiveId]);
-  async function checkout() { try { const d = await projApi(`/api/projects/${project.id}/checkout`, { method:"POST" }); setProject(d.project); setPaymentInfo(d.paymentInstructions || "تم إنشاء عملية دفع"); } catch(e) { setErr(e.message); } }
+  async function checkout() { try { if (!project.packageKey || !Number(project.priceUsd || 0)) { setErr("اختار الباقة من إعدادات المشروع قبل الدفع"); return; } const d = await projApi(`/api/projects/${project.id}/checkout`, { method:"POST" }); setProject(d.project); setPaymentInfo(d.paymentInstructions || "تم إنشاء عملية دفع"); } catch(e) { setErr(e.message); } }
   if (!effectiveId) return <PageFrame p={p}><AuthedNav p={p} current="project-detail" navigate={navigate} user={user} onLogout={() => projLogout(navigate)} /><div style={{ padding:32 }}><Toast p={p} type="error">لا يوجد مشروع محدد</Toast></div></PageFrame>;
   return <PageFrame p={p} density={0.35}>
     <AuthedNav p={p} current="project-detail" navigate={navigate} user={user} onLogout={() => projLogout(navigate)} />
     <div style={{ padding:"32px", maxWidth:1200, margin:"0 auto" }}>
-      <SectionHead p={p} code="// PROJECT_DETAIL" title={project ? project.title : "تفاصيل المشروع"} sub={project ? `${projServiceLabel(project.serviceType)} · ${packageName(project.packageKey)} · $${project.priceUsd}` : "تحميل..."} right={<CrunchBtn p={p} label="رجوع للمشاريع" onClick={() => navigate("library")} />} />
+      <SectionHead p={p} code="// PROJECT_DETAIL" title={project ? project.title : "تفاصيل المشروع"} sub={project ? `${projServiceLabel(project.serviceType)} · ${project.packageKey ? packageName(project.packageKey) : "بدون باقة"}${Number(project.priceUsd || 0) ? ` · $${project.priceUsd}` : ""}` : "تحميل..."} right={<CrunchBtn p={p} label="رجوع للمشاريع" onClick={() => navigate("library")} />} />
       {err && <div style={{ marginBottom:14 }}><Toast p={p} type="error">{err}</Toast></div>}
       {loading ? <Panel p={p} padding={40} style={{ textAlign:"center" }}><AuroraLoader p={p} size={80} /></Panel> : null}
       {project && !loading && <>
@@ -170,19 +168,20 @@ function ProjectDetailPage({ p, navigate, projectId }) {
             <div style={{ marginTop:14, fontFamily:"'Inter', sans-serif", fontSize:14, color:p.fg, lineHeight:1.8, whiteSpace:"pre-wrap" }}>{project.brief || "لا يوجد brief بعد."}</div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:10, marginTop:18 }}>
               <MiniConnected p={p} l="PAYMENT" v={String(project.paymentStatus).toUpperCase()} accent={project.paymentStatus === "paid"} />
-              <MiniConnected p={p} l="STYLE" v={project.style || "—"} mono />
-              <MiniConnected p={p} l="DURATION" v={`${project.durationSeconds || 0}s`} />
+              <MiniConnected p={p} l="PACKAGE" v={project.packageKey ? packageName(project.packageKey) : "غير محدد"} mono />
+              <MiniConnected p={p} l="PRICE" v={Number(project.priceUsd || 0) ? `$${project.priceUsd}` : "بعد الاختيار"} />
             </div>
           </Panel>
           <Panel p={p} padding={22}>
             <Tag p={p}>PAYMENT</Tag>
             <div style={{ marginTop:14, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.8 }}>
-              {project.paymentStatus === "paid" ? "تم تأكيد الدفع. الطلب جاهز للإنتاج." : "اضغط Checkout لإنشاء تعليمات الدفع. بعد الدفع، الأدمن يؤكد الطلب."}
+              {project.paymentStatus === "paid" ? "تم تأكيد الدفع. الطلب جاهز للإنتاج." : project.packageKey ? "اضغط Checkout لإنشاء تعليمات الدفع. بعد الدفع، الأدمن يؤكد الطلب." : "اختار الباقة من إعدادات المشروع أولًا."}
             </div>
-            <div style={{ marginTop:16 }}><CrunchBtn p={p} label={project.paymentStatus === "paid" ? "مدفوع" : "Checkout"} solid={project.paymentStatus !== "paid"} disabled={project.paymentStatus === "paid"} full onClick={checkout} /></div>
+            <div style={{ marginTop:16 }}><CrunchBtn p={p} label={project.paymentStatus === "paid" ? "مدفوع" : "Checkout"} solid={project.paymentStatus !== "paid" && !!project.packageKey} disabled={project.paymentStatus === "paid" || !project.packageKey} full onClick={checkout} /></div>
             {paymentInfo && <div style={{ marginTop:12 }}><Toast p={p}>{paymentInfo}</Toast></div>}
           </Panel>
         </div>
+        <ProjectConfigPanel p={p} project={project} packages={[]} onSaved={(next) => setProject(next)} />
         <ProjectUploadPanel p={p} projectId={project.id} onUploaded={load} />
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:18, marginTop:18 }}>
           <FileListPanel p={p} title="ملفات العميل" items={files} empty="لا توجد ملفات مرفوعة" />
@@ -191,6 +190,45 @@ function ProjectDetailPage({ p, navigate, projectId }) {
       </>}
     </div>
   </PageFrame>;
+}
+
+function ProjectConfigPanel({ p, project, packages, onSaved }) {
+  const [serviceType, setServiceType] = React.useState(project.serviceType || "service_agent");
+  const [packageKey, setPackageKey] = React.useState(project.packageKey || "");
+  const [style, setStyle] = React.useState(project.style || "");
+  const [durationSeconds, setDurationSeconds] = React.useState(project.durationSeconds || "");
+  const [brief, setBrief] = React.useState(project.brief || "");
+  const [loading, setLoading] = React.useState(false);
+  const [err, setErr] = React.useState("");
+  const [msg, setMsg] = React.useState("");
+  async function save() {
+    setErr(""); setMsg(""); setLoading(true);
+    try {
+      const d = await projApi(`/api/projects/${project.id}`, {
+        method:"PATCH",
+        body: JSON.stringify({ serviceType, packageKey, style, durationSeconds:Number(durationSeconds || 0), brief })
+      });
+      onSaved?.(d.project);
+      setMsg("تم حفظ إعدادات المشروع");
+    } catch(e) { setErr(e.message || "فشل حفظ الإعدادات"); }
+    finally { setLoading(false); }
+  }
+  const pack = ({ starter:150, growth:300, pro:800, agency:1500 })[packageKey];
+  return <Panel p={p} padding={22} style={{ marginBottom:18 }}>
+    <Tag p={p}>PROJECT_CONFIGURATION</Tag>
+    <div style={{ marginTop:12, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.7 }}>هنا يتم ضبط نوع الخدمة، الباقة، الستايل، والمدة بعد إنشاء المشروع. نافذة الإنشاء تبقى فقط للاسم والوصف.</div>
+    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginTop:14 }}>
+      <FormSelect p={p} label="نوع الخدمة" value={serviceType} onChange={setServiceType} options={[ ["service_agent","وكيل الخدمة"], ["film_maker","صانع الأفلام"], ["marketing_agent","وكيل التسويق"], ["youtube_documentary","وثائقي يوتيوب"], ["ugc_avatar","أفاتار UGC"] ]} />
+      <FormSelect p={p} label="الباقة" value={packageKey} onChange={setPackageKey} options={[ ["","اختر الباقة لاحقًا"], ["starter","Starter · $150"], ["growth","Growth · $300"], ["pro","Pro · $800"], ["agency","Agency · $1500"] ]} />
+      <TacticalInput p={p} label="الستايل" value={style} onChange={setStyle} placeholder="cinematic / realistic / luxury" rtl={false} />
+      <TacticalInput p={p} label="المدة بالثواني" value={String(durationSeconds)} onChange={setDurationSeconds} type="number" rtl={false} />
+    </div>
+    <div style={{ marginTop:12 }}><TacticalTextarea p={p} label="Brief / وصف التشغيل" value={brief} onChange={setBrief} rows={4} placeholder="اكتب تفاصيل التشغيل هنا بعد فتح المشروع" /></div>
+    {packageKey && <div style={{ marginTop:10 }}><Toast p={p}>الباقة المختارة: {packageName(packageKey)} · ${pack}</Toast></div>}
+    {err && <div style={{ marginTop:10 }}><Toast p={p} type="error">{err}</Toast></div>}
+    {msg && <div style={{ marginTop:10 }}><Toast p={p} type="success">{msg}</Toast></div>}
+    <div style={{ marginTop:14 }}><CrunchBtn p={p} label={loading ? "جاري الحفظ..." : "حفظ إعدادات المشروع"} solid onClick={save} disabled={loading} /></div>
+  </Panel>;
 }
 
 function ProjectUploadPanel({ p, projectId, onUploaded }) {
