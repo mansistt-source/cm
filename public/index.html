@@ -42,6 +42,7 @@
 <script type="text/babel" src="pages-marketing-studio.jsx"></script>
 <script type="text/babel" src="pages-service-agent.jsx"></script>
 <script type="text/babel" src="pages-projects.jsx"></script>
+<script type="text/babel" src="pages-hubs.jsx"></script>
 <script type="text/babel" src="pages-ugc-avatar.jsx"></script>
 
 <script type="text/babel" data-presets="react">
@@ -67,7 +68,7 @@ const PRIVATE_ROUTES = new Set([
 ]);
 
 function cmBrowserAuthed() {
-  return Boolean(window.CM_AUTH?.isAuthed?.());
+  return Boolean(window.CM_AUTH?.isAuthed?.() || localStorage.getItem("cm_token"));
 }
 
 const PATH_ALIASES = {
@@ -110,12 +111,59 @@ function readRoute() {
   return cleanRoute(window.location.pathname.split("/").filter(Boolean).pop() || "");
 }
 
+function RouteLoader({ p, show }) {
+  if (!show) return null;
+  return <div style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(10,8,7,.86)", backdropFilter:"blur(10px)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+    <div style={{ width:360, maxWidth:"86vw", textAlign:"center" }}>
+      <AuroraLoader p={p} size={110} />
+      <div style={{ marginTop:18, fontFamily:"'Space Mono', monospace", fontSize:10, color:p.accent, letterSpacing:".28em" }}>LOADING_ROUTE</div>
+    </div>
+  </div>;
+}
+
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("CM_ROUTE_ERROR", error, info);
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return <PageFrame p={p} density={0.25}>
+      <div style={{ padding:"32px", maxWidth:760, margin:"0 auto" }}>
+        <Panel p={p} padding={28}>
+          <Tag p={p} color={p.warn}>ROUTE_ERROR</Tag>
+          <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:34, color:p.fg, letterSpacing:".05em", marginTop:14 }}>حدث خطأ في الصفحة</div>
+          <div style={{ fontFamily:"'Inter', sans-serif", fontSize:13, color:p.dim, lineHeight:1.8, marginTop:8 }}>تم منع الشاشة السوداء. افتح Console لو محتاج تفاصيل الخطأ، أو ارجع للرئيسية.</div>
+          <pre style={{ whiteSpace:"pre-wrap", direction:"ltr", textAlign:"left", background:p.bg0, color:p.warn, border:`1px solid ${p.border}`, padding:12, marginTop:16, maxHeight:180, overflow:"auto" }}>{String(this.state.error?.message || this.state.error)}</pre>
+          <div style={{ display:"flex", gap:10, marginTop:18 }}>
+            <CrunchBtn p={p} label="الرئيسية" solid onClick={() => { this.setState({ error:null }); window.location.hash = "#/dashboard"; }} />
+            <CrunchBtn p={p} label="تحديث" onClick={() => window.location.reload()} />
+          </div>
+        </Panel>
+      </div>
+    </PageFrame>;
+  }
+}
+
 function App() {
   const [route, setRoute] = React.useState(readRoute);
   const [params, setParams] = React.useState({});
+  const [loading, setLoading] = React.useState(false);
+
+  function flashLoader() {
+    setLoading(true);
+    window.clearTimeout(window.__cmRouteLoaderTimer);
+    window.__cmRouteLoaderTimer = window.setTimeout(() => setLoading(false), 360);
+  }
 
   React.useEffect(() => {
-    const onHash = () => setRoute(readRoute());
+    const onHash = () => { flashLoader(); setRoute(readRoute()); };
     const onAuth = () => {
       const nextRoute = readRoute();
       if (PRIVATE_ROUTES.has(nextRoute) && !cmBrowserAuthed()) {
@@ -133,6 +181,7 @@ function App() {
       window.removeEventListener("hashchange", onHash);
       window.removeEventListener("cm-auth-changed", onAuth);
       window.removeEventListener("pageshow", onAuth);
+      window.clearTimeout(window.__cmRouteLoaderTimer);
       delete window.__cmNav;
     };
   }, []);
@@ -145,13 +194,14 @@ function App() {
 
   function navigate(target, nextParams = {}) {
     const next = cleanRoute(target);
+    flashLoader();
     setParams(nextParams || {});
     if (next === "404") {
       window.location.hash = "#/404";
       setRoute("404");
       return;
     }
-    window.location.hash = `#/${next}`;
+    if (window.location.hash !== `#/${next}`) window.location.hash = `#/${next}`;
     setRoute(next);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -159,7 +209,7 @@ function App() {
   const common = { p, navigate, user: window.CM_AUTH?.getUser?.() };
 
   if (PRIVATE_ROUTES.has(route) && !cmBrowserAuthed()) {
-    return <AuthPage {...common} />;
+    return <><RouteLoader p={p} show={loading} /><AuthPage {...common} /></>;
   }
 
   let view;
@@ -196,7 +246,7 @@ function App() {
       view = <LibraryPage {...common} />;
       break;
     case "project-detail":
-      view = <ProjectDetailPage {...common} projectId={params.id || 1} />;
+      view = <ProjectDetailPage {...common} projectId={params.id || localStorage.getItem("cm_last_project_id") || 1} />;
       break;
     case "settings":
       view = <SettingsPage {...common} />;
@@ -205,7 +255,10 @@ function App() {
       view = <NotFoundPage {...common} />;
   }
 
-  return view;
+  return <>
+    <RouteLoader p={p} show={loading} />
+    <AppErrorBoundary key={route}>{view}</AppErrorBoundary>
+  </>;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
