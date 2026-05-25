@@ -18,6 +18,9 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .filter(Boolean);
 const PAYMENT_INSTRUCTIONS = process.env.PAYMENT_INSTRUCTIONS || 'Payment link is not configured yet. Contact admin.';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '';
+const MAIL_FROM = process.env.MAIL_FROM || 'Content Machine <security@content-machine.local>';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const TWOFA_CODE_TTL_MS = 1000 * 60 * 10;
 const COOKIE_SECURE = process.env.NODE_ENV === 'production' ? '; Secure' : '';
 
 const PACKAGES = {
@@ -257,7 +260,65 @@ function otpauthUrl({ email, secret }) {
 }
 
 function makeTwoFactorChallenge(user) {
-  return makeTempToken({ purpose: '2fa_login', userId: user.id, sv: Number(user.sessionVersion || 0) }, 5);
+  return makeTempToken({ purpose: '2fa_login', userId: user.id, sv: Number(user.sessionVersion || 0) }, 10);
+}
+
+function generateEmailCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+function hashSecurityCode(code) {
+  return crypto.createHmac('sha256', JWT_SECRET).update(String(code || '').trim()).digest('hex');
+}
+
+async function deliverSecurityEmail({ to, code, purpose }) {
+  const subject = purpose === 'login' ? 'Content Machine login code' : purpose === 'disable_2fa' ? 'Content Machine disable 2FA code' : 'Content Machine 2FA activation code';
+  const text = `Your Content Machine security code is: ${code}\nThis code expires in 10 minutes.`;
+  if (!RESEND_API_KEY) {
+    console.log(`[SECURITY_EMAIL_DEV] to=${to} purpose=${purpose} code=${code}`);
+    return { sent: false, provider: 'console' };
+  }
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${RESEND_API_KEY}` },
+    body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, text })
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Email provider failed: ${body || response.status}`);
+  }
+  return { sent: true, provider: 'resend' };
+}
+
+async function createEmailCodeChallenge(db, user, purpose) {
+  const code = generateEmailCode();
+  db.twoFactorCodes ||= [];
+  db.twoFactorCodes = db.twoFactorCodes.filter((c) => !(c.userId === user.id && c.purpose === purpose));
+  const record = {
+    id: id('security_code'),
+    userId: user.id,
+    purpose,
+    codeHash: hashSecurityCode(code),
+    expiresAt: Date.now() + TWOFA_CODE_TTL_MS,
+    attempts: 0,
+    createdAt: now()
+  };
+  db.twoFactorCodes.push(record);
+  const delivery = await deliverSecurityEmail({ to: user.email, code, purpose });
+  return { record, delivery, devCode: RESEND_API_KEY ? undefined : code };
+}
+
+function verifyEmailSecurityCode(db, user, purpose, code) {
+  db.twoFactorCodes ||= [];
+  const clean = String(code || '').replace(/\s+/g, '');
+  const record = db.twoFactorCodes.find((c) => c.userId === user.id && c.purpose === purpose);
+  if (!record) return { ok: false, reason: 'missing' };
+  if (Date.now() > Number(record.expiresAt || 0)) return { ok: false, reason: 'expired' };
+  record.attempts = Number(record.attempts || 0) + 1;
+  if (record.attempts > 6) return { ok: false, reason: 'too_many_attempts' };
+  const ok = crypto.timingSafeEqual(Buffer.from(record.codeHash), Buffer.from(hashSecurityCode(clean)));
+  if (ok) db.twoFactorCodes = db.twoFactorCodes.filter((c) => c.id !== record.id);
+  return { ok, reason: ok ? 'ok' : 'bad_code' };
 }
 
 async function verifyGoogleIdToken(idToken) {
@@ -284,7 +345,7 @@ async function ensureData() {
   try {
     await stat(DB_FILE);
   } catch {
-    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [], sessions: [] }, null, 2));
+    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [], sessions: [], twoFactorCodes: [] }, null, 2));
   }
 }
 
@@ -295,6 +356,7 @@ function normalizeDb(db) {
   db.payments ||= [];
   db.deliverables ||= [];
   db.sessions ||= [];
+  db.twoFactorCodes ||= [];
   db.users = db.users.map((u) => ({
     sessionVersion: 0,
     twoFactorEnabled: false,
@@ -356,6 +418,15 @@ async function requireUser(req, res) {
     return null;
   }
   return user;
+}
+
+async function requireUserWithDb(req, res) {
+  const ctx = await getAuthContext(req);
+  if (!ctx) {
+    fail(res, 401, 'unauthorized', 'Login required');
+    return null;
+  }
+  return ctx;
 }
 
 async function requireAdmin(req, res) {
@@ -461,7 +532,7 @@ async function handleApi(req, res, url) {
     const { salt, hash } = hashPassword(password);
     const isFirstUser = db.users.length === 0;
     const role = isFirstUser || ADMIN_EMAILS.includes(email) ? 'admin' : 'user';
-    const user = { id: id('user'), name, email, passwordSalt: salt, passwordHash: hash, googleSub: null, loginMethod: 'password', role, sessionVersion: 0, twoFactorEnabled: false, twoFactorSecret: null, createdAt: now(), updatedAt: now() };
+    const user = { id: id('user'), name, email, passwordSalt: salt, passwordHash: hash, googleSub: null, loginMethod: 'password', role, sessionVersion: 0, twoFactorEnabled: false, twoFactorSecret: null, twoFactorMethod: 'email', createdAt: now(), updatedAt: now() };
     db.users.push(user);
     await saveDb(db);
     const session = createSession(db, user, req, 'password_register');
@@ -480,7 +551,10 @@ async function handleApi(req, res, url) {
     const user = db.users.find((u) => u.email === email);
     if (!user || !user.passwordHash || !checkPassword(password, user.passwordSalt, user.passwordHash)) return fail(res, 401, 'bad_login', 'Invalid email or password');
     if (user.twoFactorEnabled) {
-      json(res, 200, { requires2fa: true, challenge: makeTwoFactorChallenge(user), userPreview: { email: user.email, name: user.name } });
+      const challenge = makeTwoFactorChallenge(user);
+      const emailCode = await createEmailCodeChallenge(db, user, 'login');
+      await saveDb(db);
+      json(res, 200, { requires2fa: true, method: 'email', challenge, userPreview: { email: user.email, name: user.name }, devCode: emailCode.devCode });
       return true;
     }
     const session = createSession(db, user, req, 'password_login');
@@ -511,7 +585,10 @@ async function handleApi(req, res, url) {
     user.updatedAt = now();
     await saveDb(db);
     if (user.twoFactorEnabled) {
-      json(res, 200, { requires2fa: true, challenge: makeTwoFactorChallenge(user), userPreview: { email: user.email, name: user.name } });
+      const challenge = makeTwoFactorChallenge(user);
+      const emailCode = await createEmailCodeChallenge(db, user, 'login');
+      await saveDb(db);
+      json(res, 200, { requires2fa: true, method: 'email', challenge, userPreview: { email: user.email, name: user.name }, devCode: emailCode.devCode });
       return true;
     }
     const session = createSession(db, user, req, 'google_login');
@@ -532,7 +609,7 @@ async function handleApi(req, res, url) {
     if (db.users.some((u) => u.email === payload.email)) return fail(res, 409, 'email_exists', 'Email already registered');
     const isFirstUser = db.users.length === 0;
     const role = isFirstUser || ADMIN_EMAILS.includes(String(payload.email).toLowerCase()) ? 'admin' : 'user';
-    const user = { id: id('user'), name, email: String(payload.email).toLowerCase(), googleSub: payload.googleSub, loginMethod: 'google', passwordSalt: null, passwordHash: null, role, sessionVersion: 0, twoFactorEnabled: false, twoFactorSecret: null, createdAt: now(), updatedAt: now() };
+    const user = { id: id('user'), name, email: String(payload.email).toLowerCase(), googleSub: payload.googleSub, loginMethod: 'google', passwordSalt: null, passwordHash: null, role, sessionVersion: 0, twoFactorEnabled: false, twoFactorSecret: null, twoFactorMethod: 'email', createdAt: now(), updatedAt: now() };
     db.users.push(user);
     await saveDb(db);
     const session = createSession(db, user, req, 'google_register');
@@ -550,8 +627,10 @@ async function handleApi(req, res, url) {
     const db = await loadDb();
     const user = db.users.find((u) => u.id === payload.userId);
     if (!user || Number(payload.sv || 0) !== Number(user.sessionVersion || 0)) return fail(res, 401, 'bad_2fa_session', '2FA session expired');
-    if (!user.twoFactorEnabled || !verifyTotp(user.twoFactorSecret, body.code)) return fail(res, 401, 'bad_2fa_code', 'Invalid 2FA code');
-    const session = createSession(db, user, req, '2fa_login');
+    if (!user.twoFactorEnabled) return fail(res, 401, 'bad_2fa_code', '2FA is not enabled');
+    const verified = verifyEmailSecurityCode(db, user, 'login', body.code);
+    if (!verified.ok) return fail(res, 401, 'bad_2fa_code', 'Invalid or expired email code');
+    const session = createSession(db, user, req, '2fa_email_login');
     await saveDb(db);
     const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
@@ -610,50 +689,70 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'POST' && pathname === '/api/security/2fa/setup') {
-    const user = await requireUser(req, res);
-    if (!user) return true;
-    const db = await loadDb();
-    const target = db.users.find((u) => u.id === user.id);
-    if (!target) return fail(res, 404, 'user_not_found', 'User not found');
-    if (!target.twoFactorSecret) target.twoFactorSecret = generateTotpSecret();
-    target.updatedAt = now();
-    await saveDb(db);
-    json(res, 200, { secret: target.twoFactorSecret, otpauthUrl: otpauthUrl({ email: target.email, secret: target.twoFactorSecret }) });
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const target = ctx.db.users.find((u) => u.id === ctx.user.id);
+    if (!target) return fail(res, 404, 'not_found', 'User not found');
+    try {
+      const emailCode = await createEmailCodeChallenge(ctx.db, target, 'enable_2fa');
+      await saveDb(ctx.db);
+      json(res, 200, { method: 'email', email: target.email, expiresInSeconds: 600, message: 'Security code sent to your email', devCode: emailCode.devCode });
+    } catch (e) {
+      return fail(res, 500, 'email_failed', e.message || 'Failed to send email code');
+    }
     return true;
   }
 
   if (method === 'POST' && pathname === '/api/security/2fa/enable') {
-    const user = await requireUser(req, res);
-    if (!user) return true;
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
     const body = await readBody(req);
-    const db = await loadDb();
-    const target = db.users.find((u) => u.id === user.id);
-    if (!target || !target.twoFactorSecret) return fail(res, 400, 'setup_required', 'Run 2FA setup first');
-    if (!verifyTotp(target.twoFactorSecret, body.code)) return fail(res, 401, 'bad_2fa_code', 'Invalid 2FA code');
+    const target = ctx.db.users.find((u) => u.id === ctx.user.id);
+    if (!target) return fail(res, 404, 'not_found', 'User not found');
+    const verified = verifyEmailSecurityCode(ctx.db, target, 'enable_2fa', body.code);
+    if (!verified.ok) return fail(res, 401, 'bad_2fa_code', 'Invalid or expired email code');
     target.twoFactorEnabled = true;
+    target.twoFactorMethod = 'email';
+    target.twoFactorSecret = null;
     target.updatedAt = now();
-    await saveDb(db);
-    json(res, 200, { ok: true, user: publicUser(target) });
+    await saveDb(ctx.db);
+    json(res, 200, { user: publicUser(target) });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/security/2fa/disable/request') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const target = ctx.db.users.find((u) => u.id === ctx.user.id);
+    if (!target) return fail(res, 404, 'not_found', 'User not found');
+    if (!target.twoFactorEnabled) return fail(res, 400, 'not_enabled', '2FA is not enabled');
+    try {
+      const emailCode = await createEmailCodeChallenge(ctx.db, target, 'disable_2fa');
+      await saveDb(ctx.db);
+      json(res, 200, { method: 'email', email: target.email, expiresInSeconds: 600, message: 'Disable code sent to your email', devCode: emailCode.devCode });
+    } catch (e) {
+      return fail(res, 500, 'email_failed', e.message || 'Failed to send email code');
+    }
     return true;
   }
 
   if (method === 'POST' && pathname === '/api/security/2fa/disable') {
-    const user = await requireUser(req, res);
-    if (!user) return true;
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
     const body = await readBody(req);
-    const db = await loadDb();
-    const target = db.users.find((u) => u.id === user.id);
-    if (!target) return fail(res, 404, 'user_not_found', 'User not found');
+    const target = ctx.db.users.find((u) => u.id === ctx.user.id);
+    if (!target) return fail(res, 404, 'not_found', 'User not found');
     if (target.passwordHash && !checkPassword(String(body.password || ''), target.passwordSalt, target.passwordHash)) return fail(res, 401, 'bad_password', 'Password is incorrect');
-    if (target.twoFactorEnabled && !verifyTotp(target.twoFactorSecret, body.code)) return fail(res, 401, 'bad_2fa_code', 'Invalid 2FA code');
+    const verified = verifyEmailSecurityCode(ctx.db, target, 'disable_2fa', body.code);
+    if (!verified.ok) return fail(res, 401, 'bad_2fa_code', 'Invalid or expired email code');
     target.twoFactorEnabled = false;
+    target.twoFactorMethod = 'email';
     target.twoFactorSecret = null;
     target.updatedAt = now();
-    await saveDb(db);
-    json(res, 200, { ok: true, user: publicUser(target) });
+    await saveDb(ctx.db);
+    json(res, 200, { user: publicUser(target) });
     return true;
   }
-
 
   if (method === 'GET' && pathname === '/api/security/sessions') {
     const ctx = await getAuthContext(req);

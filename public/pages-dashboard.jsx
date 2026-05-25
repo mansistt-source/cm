@@ -1,10 +1,10 @@
 // Dashboard page — connected to backend API.
 
 const PLANS_DASH = [
-  { key: "starter", name: "Starter", price: 150, badge: "للبداية" },
-  { key: "growth", name: "Growth", price: 300, badge: "للنمو" },
-  { key: "pro", name: "Pro", price: 800, badge: "احترافي", featured: true },
-  { key: "agency", name: "Agency", price: 1500, badge: "للوكالات" },
+  { key: "starter", name: "ابتدائي",   price: 150,  credits: 1500,  badge: "للبداية" },
+  { key: "growth",  name: "مُعزز",      price: 300,  credits: 3300,  badge: "للنمو" },
+  { key: "pro",     name: "احترافي",    price: 800,  credits: 9600,  badge: "يزيد الوفرة", featured: true },
+  { key: "agency",  name: "الأقصى",     price: 1500, credits: 19500, badge: "للوكالات" },
 ];
 
 function dashToken() { return localStorage.getItem("cm_token") || ""; }
@@ -70,7 +70,7 @@ function DashboardPage({ p, navigate, credits = 0 }) {
       <AuthedNav p={p} current="dashboard" navigate={navigate} credits={credits} user={user} onLogout={() => dashLogout(navigate)} />
 
       <div style={{ borderBottom: `1px solid ${p.border}`, padding: "0 32px", display: "flex", gap: 4, background: p.bg0 }}>
-        {[{ id:"home", l:"نظرة عامة", icon:"◇" }, { id:"billing", l:"الباقات", icon:"$" }, { id:"security", l:"الأمان", icon:"⌬" }].map(t => {
+        {[{ id:"home", l:"نظرة عامة", icon:"◇" }, { id:"billing", l:"الباقات", icon:"$" }].map(t => {
           const on = tab === t.id;
           return <button key={t.id} onClick={() => setTab(t.id)} style={{ padding:"12px 18px", background:"transparent", color:on?p.accent:p.dim, border:"none", borderBottom:`2px solid ${on?p.accent:"transparent"}`, fontFamily:"'Bebas Neue', sans-serif", fontSize:14, letterSpacing:".15em", cursor:"pointer", marginBottom:-1, display:"inline-flex", alignItems:"center", gap:6 }}>
             <span style={{ fontFamily:"'Space Mono', monospace", fontSize:11, opacity:.8 }}>{t.icon}</span>{t.l}
@@ -83,7 +83,6 @@ function DashboardPage({ p, navigate, credits = 0 }) {
         {loading ? <DashboardLoading p={p} /> : null}
         {!loading && tab === "home" && <DashHome p={p} navigate={navigate} user={user} projects={projects} />}
         {!loading && tab === "billing" && <DashBilling p={p} navigate={navigate} />}
-        {!loading && tab === "security" && <DashSecurityConnected p={p} navigate={navigate} user={user} />}
       </div>
     </PageFrame>
   );
@@ -147,58 +146,150 @@ function RecentListConnected({ p, navigate, projects }) {
   </div>)}</div>;
 }
 
-function DashBilling({ p, navigate }) {
-  const [packages, setPackages] = React.useState(PLANS_DASH);
-  React.useEffect(() => { fetch("/api/packages").then(r => r.json()).then(d => setPackages(d.packages || PLANS_DASH)).catch(() => {}); }, []);
-  return <>
-    <SectionHead p={p} code="// PACKAGES" title="الباقات" sub="اختار باقة ثم أنشئ طلبك من مكتبة المشاريع" />
-    <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:14 }}>
-      {packages.map(plan => <div key={plan.key} style={{ position:"relative", padding:20, background:plan.key==="pro"?p.bg2:p.bg1, border:`1px solid ${plan.key==="pro"?p.accent:p.border}`, clipPath:"polygon(0 0,100% 0,100% calc(100% - 16px),calc(100% - 16px) 100%,0 100%)" }}>
-        <div style={{ position:"absolute", top:0, left:0, width:plan.key==="pro"?60:30, height:2, background:plan.key==="pro"?p.accent:p.dim }} />
-        <div style={{ fontFamily:"'Space Mono', monospace", fontSize:9, color:p.dim, letterSpacing:".22em", marginBottom:8 }}>PACKAGE_{plan.key.toUpperCase()}</div>
-        <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:24, color:p.fg, letterSpacing:".08em" }}>{plan.name}</div>
-        <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:44, color:p.accent, lineHeight:1, margin:"14px 0" }}>${plan.priceUsd}</div>
-        <CrunchBtn p={p} label="إنشاء طلب" solid={plan.key==="pro"} full onClick={() => navigate("library")} />
-      </div>)}
-    </div>
-  </>;
+function DashBilling({ p }) {
+  const [amount, setAmount] = React.useState(0);
+  const credits = amount > 0 ? Math.floor(amount / 0.0792) : 0;
+  const valid = amount >= 5 && amount <= 5000;
+
+  return (
+    <>
+      <SectionHead p={p} code="// FINANCIAL_OPS" title="الفوترة والاشتراك" sub="إدارة خطتك ومخزن الكريديت" />
+
+      {/* current plan */}
+      <Panel p={p} padding={22} style={{ marginBottom: 18 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr", gap: 28, alignItems: "center" }}>
+          <div>
+            <Tag p={p} color={p.accent2}>● ACTIVE_PLAN</Tag>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, color: p.fg, letterSpacing: ".05em", marginTop: 10, lineHeight: 1 }}>
+              GROWTH · مُعزز
+            </div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".18em", marginTop: 8 }}>
+              التجديد التالي: 18 ديسمبر · $300/شهر
+            </div>
+          </div>
+          <div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".22em" }}>CRED_THIS_PERIOD</div>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 48, color: p.accent, lineHeight: 1, marginTop: 6 }}>
+              2,313<span style={{ fontSize: 14, color: p.dim, marginRight: 6 }}>/ 3,300</span>
+            </div>
+            <StatusBar p={p} label="" value={70} color={p.accent} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <CrunchBtn p={p} label="ترقية الخطة" solid icon="↑" full />
+            <CrunchBtn p={p} label="إيقاف التجديد" small full />
+          </div>
+        </div>
+      </Panel>
+
+      <SectionHead p={p} code="// TIERS_AVAILABLE" title="خطط الكريديت" />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 18 }}>
+        {PLANS_DASH.map(plan => <BillingPlan key={plan.key} p={p} plan={plan} active={plan.key === "growth"} />)}
+      </div>
+
+      {/* PAYG */}
+      <Panel p={p} padding={22}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 22, alignItems: "center" }}>
+          <div>
+            <Tag p={p}>FLEX_TX</Tag>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, color: p.fg, marginTop: 8, lineHeight: 1, letterSpacing: ".04em" }}>
+              ادفع اللي استخدمته
+            </div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".18em", marginTop: 6 }}>
+              $0.079 / CRED · MAX $5,000
+            </div>
+          </div>
+          <div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.accent, letterSpacing: ".22em", marginBottom: 6 }}>// AMOUNT_USD</div>
+            <NumberSwitch p={p} value={amount} onChange={setAmount} min={0} max={5000}
+              step={(v) => v < 50 ? 1 : v < 200 ? 5 : v < 1000 ? 10 : 50}
+              prefix="$" />
+            <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
+              {[10, 50, 100, 500, 1000].map(v => (
+                <button key={v} onClick={() => setAmount(v)} style={{
+                  flex: 1, padding: "6px 0",
+                  background: amount === v ? `${p.accent}22` : p.bg2,
+                  color: amount === v ? p.accent : p.dim,
+                  border: `1px solid ${amount === v ? p.accent : p.border}`,
+                  fontFamily: "'Space Mono', monospace", fontSize: 10, letterSpacing: ".12em",
+                  cursor: "pointer",
+                }}>${v}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".22em" }}>YOU_RECEIVE</div>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, color: p.accent, lineHeight: 1, marginTop: 4 }}>
+              {credits ? credits.toLocaleString() : "—"}
+              <span style={{ fontSize: 11, color: p.dim, marginRight: 6, fontFamily: "'Space Mono', monospace" }}>CRED</span>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <CrunchBtn p={p} label="ادفع الآن" solid icon="▶" disabled={!valid} full />
+            </div>
+          </div>
+        </div>
+      </Panel>
+
+      {/* invoice history */}
+      <Panel p={p} padding={20} style={{ marginTop: 18 }}>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.accent, letterSpacing: ".22em", marginBottom: 14 }}>// INVOICE_LOG</div>
+        {[
+          ["INV-7B41", "اشتراك GROWTH",    "18 نوفمبر",  "$300.00",  "PAID"],
+          ["INV-7A2C", "شحن كريديت",      "12 نوفمبر",  "$50.00",   "PAID"],
+          ["INV-78E1", "اشتراك GROWTH",    "18 أكتوبر",  "$300.00",  "PAID"],
+          ["INV-75F0", "شحن كريديت",      "5 أكتوبر",   "$120.00",  "PAID"],
+        ].map((row, i) => (
+          <div key={i} style={{
+            display: "grid", gridTemplateColumns: "auto 1fr auto auto auto",
+            gap: 24, padding: "10px 0", borderBottom: i < 3 ? `1px dashed ${p.border}` : "none",
+            fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".12em", alignItems: "center",
+          }}>
+            <span style={{ color: p.accent }}>{row[0]}</span>
+            <span style={{ color: p.fg, fontFamily: "'Inter', sans-serif", letterSpacing: 0 }}>{row[1]}</span>
+            <span>{row[2]}</span>
+            <span style={{ color: p.fg, fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, letterSpacing: ".05em" }}>{row[3]}</span>
+            <Tag p={p} color={p.accent2}>● {row[4]}</Tag>
+          </div>
+        ))}
+      </Panel>
+    </>
+  );
 }
 
-function DashSecurityConnected({ p, navigate, user }) {
-  const [oldPassword, setOldPassword] = React.useState("");
-  const [newPassword, setNewPassword] = React.useState("");
-  const [code, setCode] = React.useState("");
-  const [setup, setSetup] = React.useState(null);
-  const [msg, setMsg] = React.useState("");
-  const [err, setErr] = React.useState("");
-  async function run(path, body) { setMsg(""); setErr(""); try { const d = await dashApi(path, { method:"POST", body: JSON.stringify(body || {}) }); setMsg("تم تنفيذ العملية"); return d; } catch(e) { setErr(e.message); } }
-  return <>
-    <SectionHead p={p} code="// SECURITY" title="الأمان" sub={`الحساب: ${user.email || ""}`} />
-    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:18 }}>
-      <Panel p={p} padding={22}>
-        <Tag p={p}>PASSWORD</Tag>
-        <div style={{ display:"flex", flexDirection:"column", gap:10, marginTop:16 }}>
-          <TacticalInput p={p} label="كلمة السر الحالية" value={oldPassword} onChange={setOldPassword} type="password" rtl={false} />
-          <TacticalInput p={p} label="كلمة السر الجديدة" value={newPassword} onChange={setNewPassword} type="password" rtl={false} />
-          <CrunchBtn p={p} label="تغيير كلمة المرور" solid full onClick={() => run("/api/security/change-password", { oldPassword, newPassword })} />
+function BillingPlan({ p, plan, active }) {
+  return (
+    <div style={{
+      position: "relative", padding: 20, background: plan.featured ? p.bg2 : p.bg1,
+      border: `1px solid ${plan.featured ? p.accent : p.border}`,
+      clipPath: "polygon(0 0, 100% 0, 100% calc(100% - 16px), calc(100% - 16px) 100%, 0 100%)",
+    }}>
+      <div style={{ position: "absolute", top: 0, left: 0, width: plan.featured ? 60 : 30, height: 2, background: plan.featured ? p.accent : p.dim }} />
+      {active && (
+        <div style={{
+          position: "absolute", top: -1, right: -1, padding: "3px 10px", background: p.accent2, color: p.bg0,
+          fontFamily: "'Bebas Neue', sans-serif", fontSize: 11, letterSpacing: ".18em",
+          clipPath: "polygon(0 0, 100% 0, 100% 100%, 12px 100%)",
+        }}>
+          ACTIVE
         </div>
-      </Panel>
-      <Panel p={p} padding={22}>
-        <Tag p={p}>2FA</Tag>
-        <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.8, marginTop:14 }}>فعّل المصادقة الثنائية باستخدام كود Authenticator.</div>
-        <div style={{ display:"flex", gap:8, marginTop:14 }}>
-          <CrunchBtn p={p} label="إنشاء سر 2FA" onClick={async () => { const d = await run("/api/security/2fa/setup", {}); if (d) setSetup(d); }} />
-          <CrunchBtn p={p} label="إنهاء كل الجلسات" onClick={() => run("/api/security/logout-all", {})} />
-        </div>
-        {setup && <div style={{ marginTop:14 }}><Toast p={p}>Secret: {setup.secret || setup.otpauth || "generated"}</Toast></div>}
-        <div style={{ marginTop:12, display:"grid", gridTemplateColumns:"1fr auto", gap:8 }}>
-          <TacticalInput p={p} label="كود التفعيل" value={code} onChange={setCode} rtl={false} />
-          <div style={{ alignSelf:"end" }}><CrunchBtn p={p} label="تفعيل" solid onClick={() => run("/api/security/2fa/enable", { code })} /></div>
-        </div>
-      </Panel>
+      )}
+      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: p.dim, letterSpacing: ".22em", marginBottom: 8 }}>
+        TIER_{plan.key.toUpperCase()}
+      </div>
+      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, color: p.fg, letterSpacing: ".08em", lineHeight: 1.2, marginBottom: 14 }}>
+        {plan.name}
+      </div>
+      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 44, letterSpacing: ".02em", color: plan.featured ? p.accent : p.fg, lineHeight: 1 }}>
+        ${plan.price}<span style={{ fontSize: 11, color: p.dim, marginRight: 4 }}>/MO</span>
+      </div>
+      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.accent2, marginTop: 4, letterSpacing: ".15em" }}>
+        {plan.credits.toLocaleString()} CRED
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <CrunchBtn p={p} label={active ? "خطتك الحالية" : "اختر"} solid={plan.featured && !active} small full disabled={active} />
+      </div>
     </div>
-    <div style={{ marginTop:14 }}>{err && <Toast p={p} type="error">{err}</Toast>}{msg && <Toast p={p} type="success">{msg}</Toast>}</div>
-  </>;
+  );
 }
 
 Object.assign(window, { DashboardPage });

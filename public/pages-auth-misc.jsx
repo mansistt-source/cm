@@ -229,10 +229,10 @@ function AuthPage({ p, navigate }) {
               ◤ {show2fa ? "TWO_FACTOR" : showGoogleName ? "GOOGLE_PROFILE" : mode === "login" ? "OPERATOR_GATE" : "ENROLLMENT"} //07
             </div>
             <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 44, letterSpacing: ".05em", color: p.fg, textTransform: "uppercase", lineHeight: 1 }}>
-              {show2fa ? "تحقق ثنائي" : showGoogleName ? "اسم الحساب" : mode === "login" ? "أهلاً بعودتك" : "ابدأ الآن"}
+              {show2fa ? "تحقق بالبريد" : showGoogleName ? "اسم الحساب" : mode === "login" ? "أهلاً بعودتك" : "ابدأ الآن"}
             </div>
             <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: p.dim, marginTop: 8 }}>
-              {show2fa ? "اكتب الرمز من تطبيق المصادقة" : showGoogleName ? "الإيميل جديد، اختر اسمًا قبل الدخول" : mode === "login" ? "اعتماد الهوية للدخول إلى نظام التشغيل" : "إنشاء عملية مشغّل جديدة"}
+              {show2fa ? "اكتب كود الأمان المرسل إلى بريد الحساب" : showGoogleName ? "الإيميل جديد، اختر اسمًا قبل الدخول" : mode === "login" ? "اعتماد الهوية للدخول إلى نظام التشغيل" : "إنشاء عملية مشغّل جديدة"}
             </div>
           </div>
 

@@ -103,7 +103,7 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
       const project = d.project;
       localStorage.setItem("cm_last_project_id", project.id);
       setShowNew(false);
-      navigate("project-detail", { id: project.id });
+      navigate(meta.target, { project });
     } catch (e) {
       setErr(e.message || "فشل إنشاء المشروع");
     } finally {
@@ -174,7 +174,7 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
     {showNew && <Modal p={p} onClose={() => setShowNew(false)} title="مشروع جديد" code={meta.code}>
       <div style={{ display: "grid", gap: 12 }}>
         <TacticalInput p={p} label="اسم المشروع" value={form.title} onChange={(v) => setForm({ ...form, title: v })} placeholder={meta.newTitle} />
-        <TacticalTextarea p={p} label="وصف مختصر" value={form.description} onChange={(v) => setForm({ ...form, description: v })} placeholder="اكتب وصف بسيط للمشروع. تفاصيل الخدمة، الباقة، الستايل، والمدة ستُضبط من داخل المشروع." rows={5} />
+        <TacticalTextarea p={p} label="وصف مختصر" value={form.description} onChange={(v) => setForm({ ...form, description: v })} placeholder="اكتب وصف بسيط للمشروع فقط." rows={5} />
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
           <CrunchBtn p={p} label="إلغاء" full onClick={() => setShowNew(false)} />
           <CrunchBtn p={p} label={creating ? "جاري الإنشاء..." : "إنشاء وفتح"} solid full onClick={createProject} disabled={creating} />
