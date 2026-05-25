@@ -63,6 +63,7 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
   const [showNew, setShowNew] = React.useState(false);
   const [editProject, setEditProject] = React.useState(null);
   const [creating, setCreating] = React.useState(false);
+  const [confirmAction, setConfirmAction] = React.useState(null);
   const [form, setForm] = React.useState({
     title: meta.newTitle,
     description: "",
@@ -126,15 +127,23 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
     }
   }
 
-  async function deleteProject(project) {
-    if (!window.confirm(`حذف المشروع: ${project.title}؟`)) return;
-    setErr("");
-    try {
-      await hubApi(`/api/projects/${project.id}`, { method: "DELETE" });
-      setProjects(projects.filter((x) => x.id !== project.id));
-    } catch (e) {
-      setErr(e.message || "فشل حذف المشروع");
-    }
+  function deleteProject(project) {
+    setConfirmAction({
+      title: "تأكيد حذف المشروع",
+      message: `سيتم حذف المشروع: ${project.title}. لا يمكن التراجع عن هذه العملية.`,
+      confirmLabel: "حذف المشروع",
+      danger: true,
+      onConfirm: async () => {
+        setErr("");
+        try {
+          await hubApi(`/api/projects/${project.id}`, { method: "DELETE" });
+          setProjects(projects.filter((x) => x.id !== project.id));
+          setConfirmAction(null);
+        } catch (e) {
+          setErr(e.message || "فشل حذف المشروع");
+        }
+      }
+    });
   }
 
   const paid = projects.filter(x => x.paymentStatus === "paid").length;
@@ -147,6 +156,10 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
       <SectionHead p={p} code={meta.code} title={meta.title} sub={meta.sub}
         right={<CrunchBtn p={p} label="إنشاء مشروع" solid icon="+" onClick={() => setShowNew(true)} />}
       />
+
+      <div style={{ display:"flex", justifyContent:"flex-start", margin:"18px 0 24px" }}>
+        <CrunchBtn p={p} label="إنشاء مشروع جديد" solid icon="+" onClick={() => setShowNew(true)} />
+      </div>
 
       {err && <div style={{ marginBottom: 14 }}><Toast p={p} type="error">{err}</Toast></div>}
 
@@ -184,6 +197,7 @@ function ToolHubPage({ p, navigate, credits = 0, tool }) {
 
 
     {editProject && <EditHubProjectModal p={p} project={editProject} onClose={() => setEditProject(null)} onSave={saveEditedProject} />}
+    {confirmAction && <HubConfirmModal p={p} action={confirmAction} onClose={() => setConfirmAction(null)} />}
   </PageFrame>;
 }
 
@@ -225,6 +239,16 @@ function EditHubProjectModal({ p, project, onClose, onSave }) {
 
 function HubSelect({ p, label, value, onChange, options }) {
   return <div><label style={{ display:"block", fontFamily:"'Space Mono', monospace", fontSize:10, color:p.accent, letterSpacing:".22em", marginBottom:6, textTransform:"uppercase" }}>▸ {label}</label><select value={value} onChange={(e) => onChange(e.target.value)} style={{ width:"100%", background:p.bg0, border:`1px solid ${p.border}`, borderRight:`2px solid ${p.accent}`, color:p.fg, padding:"12px 14px", fontFamily:"'Inter', sans-serif", fontSize:13, outline:"none" }}>{options.map(([v,l]) => <option key={v} value={v}>{l}</option>)}</select></div>;
+}
+
+function HubConfirmModal({ p, action, onClose }) {
+  return <Modal p={p} onClose={onClose} title={action.title || "تأكيد"} code="// CONFIRM" warn={action.danger}>
+    <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:14, lineHeight:1.9, marginBottom:18 }}>{action.message}</div>
+    <div style={{ display:"flex", gap:10 }}>
+      <CrunchBtn p={p} label="إلغاء" full onClick={onClose} />
+      <CrunchBtn p={p} label={action.confirmLabel || "تأكيد"} solid danger={action.danger} full onClick={action.onConfirm} />
+    </div>
+  </Modal>;
 }
 
 Object.assign(window, { FilmHubPage, MarketHubPage, ToolHubPage });

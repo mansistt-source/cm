@@ -33,6 +33,7 @@ function LibraryPage({ p, navigate, credits = 0 }) {
   const [err, setErr] = React.useState("");
   const [showNew, setShowNew] = React.useState(false);
   const [editProject, setEditProject] = React.useState(null);
+  const [confirmAction, setConfirmAction] = React.useState(null);
 
   async function load() {
     if (!projToken()) { navigate("auth"); return; }
@@ -70,15 +71,23 @@ function LibraryPage({ p, navigate, credits = 0 }) {
     }
   }
 
-  async function deleteProject(project) {
-    if (!window.confirm(`هل أنت متأكد من حذف المشروع: ${project.title}؟`)) return;
-    setErr("");
-    try {
-      await projApi(`/api/projects/${project.id}`, { method:"DELETE" });
-      setProjects(projects.filter((x) => x.id !== project.id));
-    } catch (e) {
-      setErr(e.message || "فشل حذف المشروع");
-    }
+  function deleteProject(project) {
+    setConfirmAction({
+      title: "تأكيد حذف المشروع",
+      message: `سيتم حذف المشروع: ${project.title}. لا يمكن التراجع عن هذه العملية.`,
+      confirmLabel: "حذف المشروع",
+      danger: true,
+      onConfirm: async () => {
+        setErr("");
+        try {
+          await projApi(`/api/projects/${project.id}`, { method:"DELETE" });
+          setProjects(projects.filter((x) => x.id !== project.id));
+          setConfirmAction(null);
+        } catch (e) {
+          setErr(e.message || "فشل حذف المشروع");
+        }
+      }
+    });
   }
 
   return <PageFrame p={p} density={0.35}>
@@ -102,6 +111,7 @@ function LibraryPage({ p, navigate, credits = 0 }) {
     </div>
     {showNew && <NewProjectModalConnected p={p} packages={packages} onClose={() => setShowNew(false)} onCreated={(project) => { setShowNew(false); openProject(project.id); }} />}
     {editProject && <EditProjectModalConnected p={p} project={editProject} onClose={() => setEditProject(null)} onSave={saveEditedProject} />}
+    {confirmAction && <ConfirmActionModal p={p} action={confirmAction} onClose={() => setConfirmAction(null)} />}
   </PageFrame>;
 }
 
@@ -208,6 +218,7 @@ function SettingsPage({ p, navigate, credits = 0 }) {
   const [pw, setPw] = React.useState({ currentPassword:"", newPassword:"", confirmPassword:"" });
   const [twofa, setTwofa] = React.useState({ code:"", disablePassword:"", disableCode:"" });
   const [showSecrets, setShowSecrets] = React.useState({ current:false, next:false, confirm:false, disable:false });
+  const [confirmAction, setConfirmAction] = React.useState(null);
 
   async function loadSecurity() {
     if (!projToken()) { navigate("auth"); return; }
@@ -220,7 +231,9 @@ function SettingsPage({ p, navigate, credits = 0 }) {
   }
   React.useEffect(() => { loadSecurity(); }, []);
 
-  function confirmLogout() { if (window.confirm("هل أنت متأكد من تسجيل الخروج؟")) projLogout(navigate); }
+  function confirmLogout() {
+    setConfirmAction({ title:"تأكيد تسجيل الخروج", message:"هل أنت متأكد من تسجيل الخروج؟", confirmLabel:"تسجيل خروج", danger:true, onConfirm:() => projLogout(navigate) });
+  }
 
   async function changePassword() {
     setErr(""); setMsg("");
@@ -272,22 +285,37 @@ function SettingsPage({ p, navigate, credits = 0 }) {
     } catch(e) { setErr(e.message || "فشل إلغاء المصادقة"); }
   }
 
-  async function revokeSession(session) {
-    if (!window.confirm(`إنهاء جلسة ${session.deviceName}؟`)) return;
-    setErr(""); setMsg("");
-    try {
-      const d = await projApi(`/api/security/sessions/${session.id}/revoke`, { method:"POST" });
-      if (d.currentRevoked) { projLogout(navigate); return; }
-      setMsg("تم إنهاء الجلسة");
-      await loadSecurity();
-    } catch(e) { setErr(e.message || "فشل إنهاء الجلسة"); }
+  function revokeSession(session) {
+    setConfirmAction({
+      title:"إنهاء جلسة",
+      message:`إنهاء جلسة ${session.deviceName}؟`,
+      confirmLabel:"إنهاء الجلسة",
+      danger:true,
+      onConfirm: async () => {
+        setErr(""); setMsg("");
+        try {
+          const d = await projApi(`/api/security/sessions/${session.id}/revoke`, { method:"POST" });
+          setConfirmAction(null);
+          if (d.currentRevoked) { projLogout(navigate); return; }
+          setMsg("تم إنهاء الجلسة");
+          await loadSecurity();
+        } catch(e) { setErr(e.message || "فشل إنهاء الجلسة"); }
+      }
+    });
   }
 
-  async function logoutAll() {
-    if (!window.confirm("إنهاء كل الجلسات على كل الأجهزة؟ سيتم تسجيل خروجك أيضاً.")) return;
-    setErr(""); setMsg("");
-    try { await projApi("/api/security/logout-all", { method:"POST" }); projLogout(navigate); }
-    catch(e) { setErr(e.message || "فشل إنهاء الجلسات"); }
+  function logoutAll() {
+    setConfirmAction({
+      title:"إنهاء كل الجلسات",
+      message:"إنهاء كل الجلسات على كل الأجهزة؟ سيتم تسجيل خروجك أيضاً.",
+      confirmLabel:"إنهاء كل الجلسات",
+      danger:true,
+      onConfirm: async () => {
+        setErr(""); setMsg("");
+        try { await projApi("/api/security/logout-all", { method:"POST" }); projLogout(navigate); }
+        catch(e) { setErr(e.message || "فشل إنهاء الجلسات"); }
+      }
+    });
   }
 
   return <PageFrame p={p} density={0.35}>
@@ -312,18 +340,10 @@ function SettingsPage({ p, navigate, credits = 0 }) {
           <Tag p={p}>TWO_FACTOR_AUTH</Tag>
           <Tag p={p} color={user.twoFactorEnabled ? p.accent2 : p.warn}>{user.twoFactorEnabled ? "مفعلة · ACTIVATED" : "غير مفعلة"}</Tag>
         </div>
-        <div style={{ marginTop:14, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.8 }}>التفعيل يتم بكود أمان يصل إلى بريد الحساب. لا يوجد تطبيق مصادقة هنا.</div>
-        {!user.twoFactorEnabled && <div style={{ marginTop:14, display:"grid", gap:10 }}>
-          <CrunchBtn p={p} label="إرسال كود التفعيل" solid onClick={requestEnable2fa} />
-          <TacticalInput p={p} label="كود البريد" value={twofa.code} onChange={(v)=>setTwofa({...twofa, code:v})} placeholder="123456" rtl={false} />
-          <CrunchBtn p={p} label="تفعيل المصادقة" solid onClick={enable2fa} />
-        </div>}
-        {user.twoFactorEnabled && <div style={{ marginTop:14, display:"grid", gap:10 }}>
-          <CrunchBtn p={p} label="إرسال كود تعطيل المصادقة" onClick={requestDisable2fa} />
-          <PasswordField p={p} label="كلمة المرور للتأكيد" value={twofa.disablePassword} onChange={(v)=>setTwofa({...twofa, disablePassword:v})} show={showSecrets.disable} onToggle={()=>setShowSecrets({...showSecrets, disable:!showSecrets.disable})} />
-          <TacticalInput p={p} label="كود البريد" value={twofa.disableCode} onChange={(v)=>setTwofa({...twofa, disableCode:v})} placeholder="123456" rtl={false} />
-          <CrunchBtn p={p} label="إلغاء المصادقة" danger onClick={disable2fa} />
-        </div>}
+        <div style={{ marginTop:14, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.8 }}>المصادقة الثنائية تتم بكود من 6 أرقام يتم إرساله إلى بريد الحساب.</div>
+        <div style={{ marginTop:14 }}>
+          <CrunchBtn p={p} label={user.twoFactorEnabled ? "إدارة المصادقة الثنائية" : "تفعيل المصادقة الثنائية"} solid onClick={() => navigate("security-2fa")} />
+        </div>
       </Panel>
 
       <Panel p={p} padding={24} style={{ marginBottom:16 }}>
@@ -353,6 +373,88 @@ function SettingsPage({ p, navigate, credits = 0 }) {
         </div>
       </Panel>
     </div>
+    {confirmAction && <ConfirmActionModal p={p} action={confirmAction} onClose={() => setConfirmAction(null)} />}
+  </PageFrame>;
+}
+
+function TwoFactorActivationPage({ p, navigate, credits = 0 }) {
+  const [user, setUser] = React.useState(projCurrentUser());
+  const [code, setCode] = React.useState("");
+  const [disablePassword, setDisablePassword] = React.useState("");
+  const [disableCode, setDisableCode] = React.useState("");
+  const [showPassword, setShowPassword] = React.useState(false);
+  const [err, setErr] = React.useState("");
+  const [msg, setMsg] = React.useState("");
+  const [sending, setSending] = React.useState(false);
+
+  async function load() {
+    if (!projToken()) { navigate("auth"); return; }
+    try {
+      const me = await projApi("/api/auth/me");
+      if (me.user) { setUser(me.user); localStorage.setItem("cm_user", JSON.stringify(me.user)); }
+    } catch(e) { setErr(e.message || "فشل تحميل بيانات الحساب"); }
+  }
+  React.useEffect(() => { load(); }, []);
+
+  async function requestEnable() {
+    setErr(""); setMsg(""); setSending(true);
+    try {
+      const d = await projApi("/api/security/2fa/setup", { method:"POST" });
+      setMsg(d.devCode ? `تم تجهيز الكود. DEV CODE: ${d.devCode}` : `تم إرسال كود من 6 أرقام إلى ${d.email || user.email}`);
+    } catch(e) { setErr(e.message || "فشل إرسال كود التفعيل"); }
+    finally { setSending(false); }
+  }
+  async function enable() {
+    setErr(""); setMsg("");
+    if (!/^\d{6}$/.test(code.trim())) { setErr("اكتب كود مكوّن من 6 أرقام"); return; }
+    try {
+      const d = await projApi("/api/security/2fa/enable", { method:"POST", body:JSON.stringify({ code:code.trim() }) });
+      if (d.user) { setUser(d.user); localStorage.setItem("cm_user", JSON.stringify(d.user)); }
+      setCode(""); setMsg("تم تفعيل المصادقة الثنائية");
+    } catch(e) { setErr(e.message || "فشل تفعيل المصادقة"); }
+  }
+  async function requestDisable() {
+    setErr(""); setMsg(""); setSending(true);
+    try {
+      const d = await projApi("/api/security/2fa/disable/request", { method:"POST" });
+      setMsg(d.devCode ? `تم تجهيز كود التعطيل. DEV CODE: ${d.devCode}` : `تم إرسال كود التعطيل إلى ${d.email || user.email}`);
+    } catch(e) { setErr(e.message || "فشل إرسال كود التعطيل"); }
+    finally { setSending(false); }
+  }
+  async function disable() {
+    setErr(""); setMsg("");
+    if (!disablePassword || !/^\d{6}$/.test(disableCode.trim())) { setErr("اكتب كلمة المرور وكود البريد المكوّن من 6 أرقام"); return; }
+    try {
+      const d = await projApi("/api/security/2fa/disable", { method:"POST", body:JSON.stringify({ password:disablePassword, code:disableCode.trim() }) });
+      if (d.user) { setUser(d.user); localStorage.setItem("cm_user", JSON.stringify(d.user)); }
+      setDisablePassword(""); setDisableCode(""); setMsg("تم تعطيل المصادقة الثنائية");
+    } catch(e) { setErr(e.message || "فشل تعطيل المصادقة"); }
+  }
+
+  return <PageFrame p={p} density={0.35}>
+    <AuthedNav p={p} current="settings" navigate={navigate} credits={credits} user={user} onLogout={() => projLogout(navigate)} />
+    <div style={{ padding:"32px", maxWidth:820, margin:"0 auto" }}>
+      <SectionHead p={p} code="// EMAIL_2FA" title="المصادقة الثنائية" sub="تفعيل المصادقة بكود أمان يصل إلى بريد الحساب" right={<CrunchBtn p={p} label="رجوع للإعدادات" onClick={() => navigate("settings")} />} />
+      {err && <div style={{ marginBottom:14 }}><Toast p={p} type="error">{err}</Toast></div>}
+      {msg && <div style={{ marginBottom:14 }}><Toast p={p} type="success">{msg}</Toast></div>}
+      <Panel p={p} padding={24}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12 }}>
+          <Tag p={p}>EMAIL_CODE_STATUS</Tag>
+          <Tag p={p} color={user.twoFactorEnabled ? p.accent2 : p.warn}>{user.twoFactorEnabled ? "مفعلة · ACTIVATED" : "غير مفعلة"}</Tag>
+        </div>
+        <div style={{ marginTop:12, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.9 }}>سيتم إرسال كود مكوّن من 6 أرقام إلى: <span style={{ color:p.fg }}>{user.email}</span>. الكود صالح لمدة 10 دقائق.</div>
+        {!user.twoFactorEnabled ? <div style={{ display:"grid", gap:12, marginTop:18 }}>
+          <CrunchBtn p={p} label={sending ? "جاري الإرسال..." : "إرسال كود التفعيل"} solid onClick={requestEnable} disabled={sending} />
+          <TacticalInput p={p} label="كود التفعيل" value={code} onChange={setCode} placeholder="123456" rtl={false} />
+          <CrunchBtn p={p} label="تفعيل المصادقة" solid onClick={enable} />
+        </div> : <div style={{ display:"grid", gap:12, marginTop:18 }}>
+          <CrunchBtn p={p} label={sending ? "جاري الإرسال..." : "إرسال كود التعطيل"} onClick={requestDisable} disabled={sending} />
+          <PasswordField p={p} label="كلمة المرور للتأكيد" value={disablePassword} onChange={setDisablePassword} show={showPassword} onToggle={() => setShowPassword(!showPassword)} />
+          <TacticalInput p={p} label="كود التعطيل" value={disableCode} onChange={setDisableCode} placeholder="123456" rtl={false} />
+          <CrunchBtn p={p} label="تعطيل المصادقة" danger onClick={disable} />
+        </div>}
+      </Panel>
+    </div>
   </PageFrame>;
 }
 
@@ -377,4 +479,14 @@ function Modal({ p, onClose, title, code, warn, children }) {
   </div>;
 }
 
-Object.assign(window, { LibraryPage, ProjectDetailPage, SettingsPage });
+function ConfirmActionModal({ p, action, onClose }) {
+  return <Modal p={p} onClose={onClose} title={action.title || "تأكيد"} code="// CONFIRM" warn={action.danger}>
+    <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:14, lineHeight:1.9, marginBottom:18 }}>{action.message}</div>
+    <div style={{ display:"flex", gap:10 }}>
+      <CrunchBtn p={p} label="إلغاء" full onClick={onClose} />
+      <CrunchBtn p={p} label={action.confirmLabel || "تأكيد"} solid danger={action.danger} full onClick={action.onConfirm} />
+    </div>
+  </Modal>;
+}
+
+Object.assign(window, { LibraryPage, ProjectDetailPage, SettingsPage, TwoFactorActivationPage });
