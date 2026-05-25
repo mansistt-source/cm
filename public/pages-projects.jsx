@@ -339,9 +339,16 @@ function SettingsPage({ p, navigate, credits = 0 }) {
 
       <Panel p={p} padding={24} style={{ marginBottom:16 }}>
         <Tag p={p}>ACCOUNT</Tag>
-        <div style={{ marginTop:14, display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-          <MiniConnected p={p} l="EMAIL" v={user.email || ""} mono />
-          <MiniConnected p={p} l="ROLE" v={user.role || "user"} accent />
+        <div style={{ marginTop:18, display:"grid", gridTemplateColumns:"1.15fr 1fr", gap:18, alignItems:"stretch" }}>
+          <div style={{ minHeight:118, border:`1px solid ${p.border}`, background:p.bg0, display:"flex", flexDirection:"column", justifyContent:"center", padding:"20px 22px", position:"relative", overflow:"hidden" }}>
+            <div style={{ position:"absolute", inset:0, background:`radial-gradient(circle at 18% 35%, ${p.accent}22, transparent 34%)`, opacity:.5, pointerEvents:"none" }} />
+            <div style={{ position:"relative", fontFamily:"'Space Mono', monospace", color:p.dim, fontSize:10, letterSpacing:".22em", textTransform:"uppercase", marginBottom:10 }}>ACCOUNT_NAME</div>
+            <div style={{ position:"relative", fontFamily:"'Bebas Neue', 'Noto Kufi Arabic', sans-serif", color:p.fg, fontSize:42, lineHeight:1, letterSpacing:".03em", direction:"auto", wordBreak:"break-word" }}>{user.name || "User"}</div>
+          </div>
+          <div style={{ display:"grid", gap:12 }}>
+            <MiniConnected p={p} l="EMAIL" v={user.email || ""} mono />
+            <MiniConnected p={p} l="ROLE" v={user.role || "user"} accent />
+          </div>
         </div>
         <div style={{ marginTop:16, display:"grid", gridTemplateColumns:"1fr auto", gap:10, alignItems:"end" }}>
           <TacticalInput p={p} label="تغيير الاسم" value={nameDraft} onChange={setNameDraft} placeholder="اسم الحساب" />
