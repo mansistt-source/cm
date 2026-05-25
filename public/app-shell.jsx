@@ -63,10 +63,32 @@ window.CM_AUTH = {
 };
 
 // ---- AuthedNav: top bar shown on all logged-in pages
-function AuthedNav({ p, current, navigate, credits = 4820, user, onLogout }) {
+function AuthedNav({ p, current, navigate, credits = null, user, onLogout }) {
   const currentUser = user || cmGetStoredUser() || { name: "مشغل", email: "operator@content.machine", initial: "م" };
   const safeName = (currentUser.name || currentUser.email || "مشغل").trim();
   const safeInitial = (currentUser.initial || safeName.charAt(0) || "م").toUpperCase();
+  const [liveCredits, setLiveCredits] = React.useState(typeof credits === "number" ? credits : 0);
+
+  async function refreshWalletChip() {
+    const token = cmGetAuthToken();
+    if (!token) { setLiveCredits(0); return; }
+    try {
+      const res = await fetch("/api/me/wallet", { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.wallet) setLiveCredits(Number(data.wallet.availableCredits || data.wallet.balanceCredits || 0));
+    } catch (_) {}
+  }
+
+  React.useEffect(() => {
+    refreshWalletChip();
+    const onWallet = () => refreshWalletChip();
+    window.addEventListener("cm-wallet-changed", onWallet);
+    window.addEventListener("cm-auth-changed", onWallet);
+    return () => {
+      window.removeEventListener("cm-wallet-changed", onWallet);
+      window.removeEventListener("cm-auth-changed", onWallet);
+    };
+  }, []);
 
   function handleLogout() {
     if (window.CM_AUTH?.logout) return window.CM_AUTH.logout(typeof onLogout === "function" ? onLogout : navigate);
@@ -81,6 +103,7 @@ function AuthedNav({ p, current, navigate, credits = 4820, user, onLogout }) {
     { id: "market-hub",  l: "وكيل التسويق",  icon: "◆", aliases: ["market"] },
     { id: "ugc-avatar", l: "أفاتار UGC", icon: "◉" },
     { id: "library",   l: "المشاريع",   icon: "◫" },
+    { id: "billing",   l: "الفوترة",     icon: "¤" },
     { id: "settings",  l: "الإعدادات",   icon: "⚙" },
   ];
   return (
@@ -105,6 +128,7 @@ function AuthedNav({ p, current, navigate, credits = 4820, user, onLogout }) {
         {tabs.map(t => {
           const on = current === t.id
             || (current === "project-detail" && t.id === "library")
+            || (current === "billing" && t.id === "billing")
             || (t.aliases && t.aliases.includes(current));
           return (
             <button key={t.id} onClick={() => navigate(t.id)} style={{
@@ -124,14 +148,14 @@ function AuthedNav({ p, current, navigate, credits = 4820, user, onLogout }) {
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         {/* credit chip */}
-        <div style={{
-          padding: "6px 14px", background: p.bg1, border: `1px solid ${p.border}`,
-          fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".15em",
-          display: "inline-flex", alignItems: "center", gap: 8,
-        }}>
-          <span style={{ width: 5, height: 5, background: p.accent2, transform: "rotate(45deg)" }} />
-          CRED <span style={{ color: p.accent, fontFamily: "'Bebas Neue', sans-serif", fontSize: 14, letterSpacing: ".05em" }}>{credits.toLocaleString()}</span>
-        </div>
+        <button onClick={() => navigate("billing")} style={{
+          padding: "6px 14px", background: current === "billing" ? p.accent : p.bg1, border: `1px solid ${current === "billing" ? p.accent : p.border}`,
+          fontFamily: "'Space Mono', monospace", fontSize: 10, color: current === "billing" ? p.bg0 : p.dim, letterSpacing: ".15em",
+          display: "inline-flex", alignItems: "center", gap: 8, cursor:"pointer"
+        }} title="فتح صفحة الفوترة">
+          <span style={{ width: 5, height: 5, background: current === "billing" ? p.bg0 : p.accent2, transform: "rotate(45deg)" }} />
+          CRED <span style={{ color: current === "billing" ? p.bg0 : p.accent, fontFamily: "'Bebas Neue', sans-serif", fontSize: 14, letterSpacing: ".05em" }}>{Number(liveCredits || 0).toLocaleString()}</span>
+        </button>
         {/* avatar */}
         <div style={{
           width: 30, height: 30, background: p.accent,
