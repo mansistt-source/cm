@@ -9,16 +9,52 @@ function AuthPage({ p, navigate }) {
   const [ok, setOk] = React.useState("");
   const [loading, setLoading] = React.useState(false);
 
-  function submit() {
-    setErr(""); setOk("");
-    if (!email || !pass || (mode === "register" && !name)) { setErr("يرجى ملء جميع الحقول"); return; }
-    setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
-      setOk(mode === "register" ? "تم إنشاء الحساب · جاري التحويل..." : "أهلاً بك · جاري التحويل...");
-      setTimeout(() => navigate("dashboard"), 700);
-    }, 900);
+ async function submit() {
+  setErr("");
+  setOk("");
+
+  if (!email || !pass || (mode === "register" && !name)) {
+    setErr("يرجى ملء جميع الحقول");
+    return;
   }
+
+  setLoading(true);
+
+  try {
+    const endpoint = mode === "register" ? "/api/auth/register" : "/api/auth/login";
+
+    const payload = mode === "register"
+      ? { name, email, password: pass }
+      : { email, password: pass };
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || "فشل تسجيل الدخول");
+    }
+
+    localStorage.setItem("cm_token", data.token);
+    localStorage.setItem("cm_user", JSON.stringify(data.user));
+
+    setOk(mode === "register" ? "تم إنشاء الحساب · جاري التحويل..." : "أهلاً بك · جاري التحويل...");
+
+    setTimeout(() => {
+      navigate("dashboard");
+    }, 700);
+  } catch (error) {
+    setErr(error.message || "حدث خطأ غير متوقع");
+  } finally {
+    setLoading(false);
+  }
+}
 
   return (
     <div dir="rtl" style={{
