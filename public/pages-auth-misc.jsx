@@ -1,4 +1,4 @@
-// Auth page (login/register) + 404
+// Auth page (login/register/google/2FA) + 404
 
 function AuthPage({ p, navigate }) {
   const [mode, setMode] = React.useState("login");
@@ -9,52 +9,190 @@ function AuthPage({ p, navigate }) {
   const [ok, setOk] = React.useState("");
   const [loading, setLoading] = React.useState(false);
 
- async function submit() {
-  setErr("");
-  setOk("");
+  const [googleClientId, setGoogleClientId] = React.useState("");
+  const [googleReady, setGoogleReady] = React.useState(false);
+  const [googleNameStep, setGoogleNameStep] = React.useState(null);
+  const [googleName, setGoogleName] = React.useState("");
 
-  if (!email || !pass || (mode === "register" && !name)) {
-    setErr("يرجى ملء جميع الحقول");
-    return;
+  const [twoFaStep, setTwoFaStep] = React.useState(null);
+  const [twoFaCode, setTwoFaCode] = React.useState("");
+  const googleBtnRef = React.useRef(null);
+
+  function finishAuth(data, successMessage) {
+    if (!data.token || !data.user) throw new Error("استجابة الاعتماد غير مكتملة");
+    window.CM_AUTH?.save(data.token, data.user);
+    setOk(successMessage || "تم الاعتماد · جاري التحويل...");
+    setTimeout(() => navigate("dashboard"), 500);
   }
 
-  setLoading(true);
+  async function loadGoogleConfig() {
+    try {
+      const res = await fetch("/api/config", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      setGoogleClientId(data.googleClientId || "");
+    } catch (_) {
+      setGoogleClientId("");
+    }
+  }
 
-  try {
-    const endpoint = mode === "register" ? "/api/auth/register" : "/api/auth/login";
+  React.useEffect(() => { loadGoogleConfig(); }, []);
 
-    const payload = mode === "register"
-      ? { name, email, password: pass }
-      : { email, password: pass };
+  React.useEffect(() => {
+    if (!googleClientId) return;
+    function renderGoogleButton() {
+      if (!window.google?.accounts?.id || !googleBtnRef.current) return;
+      window.google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: async (response) => {
+          await handleGoogleCredential(response.credential);
+        },
+      });
+      googleBtnRef.current.innerHTML = "";
+      window.google.accounts.id.renderButton(googleBtnRef.current, {
+        theme: "outline",
+        size: "large",
+        text: "continue_with",
+        shape: "rectangular",
+        width: Math.min(360, googleBtnRef.current.offsetWidth || 360),
+      });
+      setGoogleReady(true);
+    }
+    if (window.google?.accounts?.id) {
+      renderGoogleButton();
+      return;
+    }
+    const existing = document.querySelector('script[data-cm-google="1"]');
+    if (existing) {
+      existing.addEventListener("load", renderGoogleButton, { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.dataset.cmGoogle = "1";
+    script.onload = renderGoogleButton;
+    document.head.appendChild(script);
+  }, [googleClientId]);
 
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    });
+  async function handleGoogleCredential(idToken) {
+    setErr(""); setOk(""); setLoading(true);
+    try {
+      const res = await fetch("/api/auth/google", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || "فشل تسجيل الدخول عبر Google");
+      if (data.needsName) {
+        setGoogleNameStep(data);
+        setGoogleName(data.suggestedName || "");
+        setOk("الإيميل جديد · اكتب اسم الحساب لإكمال التسجيل");
+        return;
+      }
+      if (data.requires2fa) {
+        setTwoFaStep(data);
+        setOk("أدخل رمز 2FA لإكمال الدخول");
+        return;
+      }
+      finishAuth(data, "تم الدخول عبر Google · جاري التحويل...");
+    } catch (error) {
+      setErr(error.message || "حدث خطأ في Google Sign-In");
+    } finally {
+      setLoading(false);
+    }
+  }
 
-    const data = await res.json();
+  async function completeGoogleName() {
+    setErr(""); setOk("");
+    const cleanName = googleName.trim();
+    if (!cleanName) return setErr("اكتب اسم الحساب أولًا");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/google/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ googleSession: googleNameStep.googleSession, name: cleanName }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || "فشل إكمال حساب Google");
+      finishAuth(data, "تم إنشاء الحساب · جاري التحويل...");
+    } catch (error) {
+      setErr(error.message || "حدث خطأ غير متوقع");
+    } finally {
+      setLoading(false);
+    }
+  }
 
-    if (!res.ok) {
-      throw new Error(data.error || "فشل تسجيل الدخول");
+  async function submit2fa() {
+    setErr(""); setOk("");
+    if (!twoFaCode.trim()) return setErr("اكتب رمز 2FA");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/2fa/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challenge: twoFaStep.challenge, code: twoFaCode.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || "رمز 2FA غير صحيح");
+      finishAuth(data, "تم التحقق · جاري التحويل...");
+    } catch (error) {
+      setErr(error.message || "فشل التحقق");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submit() {
+    setErr("");
+    setOk("");
+
+    const cleanName = name.trim();
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanEmail || !pass || (mode === "register" && !cleanName)) {
+      setErr("يرجى ملء جميع الحقول");
+      return;
     }
 
-    localStorage.setItem("cm_token", data.token);
-    localStorage.setItem("cm_user", JSON.stringify(data.user));
+    setLoading(true);
 
-    setOk(mode === "register" ? "تم إنشاء الحساب · جاري التحويل..." : "أهلاً بك · جاري التحويل...");
+    try {
+      const endpoint = mode === "register" ? "/api/auth/register" : "/api/auth/login";
+      const payload = mode === "register"
+        ? { name: cleanName, email: cleanEmail, password: pass }
+        : { email: cleanEmail, password: pass };
 
-    setTimeout(() => {
-      navigate("dashboard");
-    }, 700);
-  } catch (error) {
-    setErr(error.message || "حدث خطأ غير متوقع");
-  } finally {
-    setLoading(false);
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data.message || data.error || "فشل تسجيل الدخول");
+      }
+
+      if (data.requires2fa) {
+        setTwoFaStep(data);
+        setOk("أدخل رمز 2FA لإكمال الدخول");
+        return;
+      }
+
+      finishAuth(data, mode === "register" ? "تم إنشاء الحساب · جاري التحويل..." : "أهلاً بك · جاري التحويل...");
+    } catch (error) {
+      setErr(error.message || "حدث خطأ غير متوقع");
+    } finally {
+      setLoading(false);
+    }
   }
-}
+
+  const showGoogleName = Boolean(googleNameStep);
+  const show2fa = Boolean(twoFaStep);
 
   return (
     <div dir="rtl" style={{
@@ -65,7 +203,6 @@ function AuthPage({ p, navigate }) {
         <ParticleField p={p} density={0.5} showGrid={true} />
       </div>
 
-      {/* mini nav */}
       <nav style={{
         position: "relative", zIndex: 2,
         padding: "16px 32px", borderBottom: `1px solid ${p.border}`, background: `${p.bg0}cc`, backdropFilter: "blur(10px)",
@@ -87,20 +224,18 @@ function AuthPage({ p, navigate }) {
 
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, position: "relative", zIndex: 2 }}>
         <div style={{ width: "100%", maxWidth: 420 }}>
-          {/* Header */}
           <div style={{ textAlign: "center", marginBottom: 26 }}>
             <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, letterSpacing: ".3em", color: p.accent, textTransform: "uppercase", marginBottom: 10 }}>
-              ◤ {mode === "login" ? "OPERATOR_GATE" : "ENROLLMENT"} //07
+              ◤ {show2fa ? "TWO_FACTOR" : showGoogleName ? "GOOGLE_PROFILE" : mode === "login" ? "OPERATOR_GATE" : "ENROLLMENT"} //07
             </div>
             <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 44, letterSpacing: ".05em", color: p.fg, textTransform: "uppercase", lineHeight: 1 }}>
-              {mode === "login" ? "أهلاً بعودتك" : "ابدأ الآن"}
+              {show2fa ? "تحقق ثنائي" : showGoogleName ? "اسم الحساب" : mode === "login" ? "أهلاً بعودتك" : "ابدأ الآن"}
             </div>
             <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: p.dim, marginTop: 8 }}>
-              {mode === "login" ? "اعتماد الهوية للدخول إلى نظام التشغيل" : "إنشاء عملية مشغّل جديدة"}
+              {show2fa ? "اكتب الرمز من تطبيق المصادقة" : showGoogleName ? "الإيميل جديد، اختر اسمًا قبل الدخول" : mode === "login" ? "اعتماد الهوية للدخول إلى نظام التشغيل" : "إنشاء عملية مشغّل جديدة"}
             </div>
           </div>
 
-          {/* Card */}
           <div style={{
             position: "relative", background: p.bg1, border: `1px solid ${p.border}`,
             padding: 28,
@@ -109,82 +244,78 @@ function AuthPage({ p, navigate }) {
             <div style={{ position: "absolute", top: 0, left: 0, width: 60, height: 2, background: p.accent }} />
             <Corners p={p} size={10} inset={4} color={p.accent} />
 
-            {/* mode toggle */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginBottom: 22 }}>
-              {[
-                { id: "login", l: "دخول" },
-                { id: "register", l: "تسجيل" },
-              ].map(m => (
-                <button key={m.id} onClick={() => { setMode(m.id); setErr(""); setOk(""); }} style={{
-                  padding: "10px",
-                  background: mode === m.id ? p.accent : "transparent",
-                  color: mode === m.id ? p.bg0 : p.dim,
-                  border: `1px solid ${mode === m.id ? p.accent : p.border}`,
-                  fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, letterSpacing: ".18em",
-                  cursor: "pointer",
-                }}>{m.l}</button>
-              ))}
-            </div>
-
-            {/* google btn (styled mock) */}
-            <button style={{
-              width: "100%", padding: "12px 14px", background: p.bg0, border: `1px solid ${p.border}`,
-              color: p.fg, fontFamily: "'Inter', sans-serif", fontSize: 13, cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 14,
-            }}>
-              <svg width="16" height="16" viewBox="0 0 18 18">
-                <path d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 002.23-7.06z" fill="#4285f4"/>
-                <path d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2.04a4.8 4.8 0 01-7.18-2.54H1.83v2.07A8 8 0 008.98 17z" fill="#34a853"/>
-                <path d="M4.5 10.48a4.8 4.8 0 010-3.04V5.37H1.83a8 8 0 000 7.18l2.67-2.07z" fill="#fbbc05"/>
-                <path d="M8.98 4.18c1.17 0 2.23.4 3.06 1.2l2.3-2.3A8 8 0 001.83 5.37L4.5 7.44a4.77 4.77 0 014.48-3.26z" fill="#ea4335"/>
-              </svg>
-              المتابعة عبر Google
-            </button>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0" }}>
-              <div style={{ flex: 1, height: 1, background: p.border }} />
-              <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".22em" }}>OR</span>
-              <div style={{ flex: 1, height: 1, background: p.border }} />
-            </div>
-
-            {/* fields */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {mode === "register" && (
-                <TacticalInput p={p} label="الاسم" value={name} onChange={setName} placeholder="اسمك الكامل" />
-              )}
-              <TacticalInput p={p} label="البريد" value={email} onChange={setEmail} type="email" placeholder="you@operator.com" rtl={false} />
-              <TacticalInput p={p} label="كلمة السر" value={pass} onChange={setPass} type="password" placeholder="••••••••" rtl={false} />
-
-              {err && <Toast p={p} type="error">{err}</Toast>}
-              {ok && <Toast p={p} type="success">{ok}</Toast>}
-
-              <div style={{ marginTop: 4 }}>
-                <CrunchBtn p={p} label={loading ? "جاري الاعتماد..." : mode === "login" ? "دخول" : "إنشاء الحساب"} solid icon="▶" full onClick={submit} disabled={loading} />
-              </div>
-
-              {mode === "login" && (
-                <div style={{ textAlign: "center", marginTop: 10 }}>
-                  <a style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".18em", textDecoration: "none", cursor: "pointer" }}>
-                    ↳ نسيت كلمة السر؟
-                  </a>
+            {!showGoogleName && !show2fa && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginBottom: 22 }}>
+                  {[
+                    { id: "login", l: "دخول" },
+                    { id: "register", l: "تسجيل" },
+                  ].map(m => (
+                    <button key={m.id} onClick={() => { setMode(m.id); setErr(""); setOk(""); }} style={{
+                      padding: "10px",
+                      background: mode === m.id ? p.accent : "transparent",
+                      color: mode === m.id ? p.bg0 : p.dim,
+                      border: `1px solid ${mode === m.id ? p.accent : p.border}`,
+                      fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, letterSpacing: ".18em",
+                      cursor: "pointer",
+                    }}>{m.l}</button>
+                  ))}
                 </div>
-              )}
-            </div>
+
+                <div style={{ width: "100%", minHeight: 44, padding: 6, background: p.bg0, border: `1px solid ${p.border}`, marginBottom: 14, display: "flex", justifyContent: "center", alignItems: "center" }}>
+                  {googleClientId ? <div ref={googleBtnRef} style={{ width: "100%", display: "flex", justifyContent: "center" }} /> : (
+                    <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".16em" }}>GOOGLE CLIENT ID NOT CONFIGURED</span>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0" }}>
+                  <div style={{ flex: 1, height: 1, background: p.border }} />
+                  <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".22em" }}>OR</span>
+                  <div style={{ flex: 1, height: 1, background: p.border }} />
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {mode === "register" && (
+                    <TacticalInput p={p} label="الاسم" value={name} onChange={setName} placeholder="اسمك الكامل" />
+                  )}
+                  <TacticalInput p={p} label="البريد" value={email} onChange={setEmail} type="email" placeholder="you@operator.com" rtl={false} />
+                  <TacticalInput p={p} label="كلمة السر" value={pass} onChange={setPass} type="password" placeholder="••••••••" rtl={false} />
+
+                  {err && <Toast p={p} type="error">{err}</Toast>}
+                  {ok && <Toast p={p} type="success">{ok}</Toast>}
+
+                  <div style={{ marginTop: 4 }}>
+                    <CrunchBtn p={p} label={loading ? "جاري الاعتماد..." : mode === "login" ? "دخول" : "إنشاء الحساب"} solid icon="▶" full onClick={submit} disabled={loading} />
+                  </div>
+                </div>
+              </>
+            )}
+
+            {showGoogleName && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <Toast p={p} type="info">Google: {googleNameStep.email}</Toast>
+                <TacticalInput p={p} label="اسم الحساب" value={googleName} onChange={setGoogleName} placeholder="اكتب اسمك الحقيقي" />
+                {err && <Toast p={p} type="error">{err}</Toast>}
+                {ok && <Toast p={p} type="success">{ok}</Toast>}
+                <CrunchBtn p={p} label={loading ? "جاري الإنشاء..." : "إكمال التسجيل"} solid icon="▶" full onClick={completeGoogleName} disabled={loading} />
+                <CrunchBtn p={p} label="رجوع" onClick={() => { setGoogleNameStep(null); setErr(""); setOk(""); }} full />
+              </div>
+            )}
+
+            {show2fa && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <Toast p={p} type="info">الحساب محمي بـ 2FA</Toast>
+                <TacticalInput p={p} label="رمز 2FA" value={twoFaCode} onChange={setTwoFaCode} placeholder="123456" rtl={false} />
+                {err && <Toast p={p} type="error">{err}</Toast>}
+                {ok && <Toast p={p} type="success">{ok}</Toast>}
+                <CrunchBtn p={p} label={loading ? "جاري التحقق..." : "تحقق"} solid icon="▶" full onClick={submit2fa} disabled={loading} />
+                <CrunchBtn p={p} label="رجوع" onClick={() => { setTwoFaStep(null); setTwoFaCode(""); setErr(""); setOk(""); }} full />
+              </div>
+            )}
           </div>
 
-          {/* meta */}
           <div style={{ textAlign: "center", marginTop: 18, fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".22em", textTransform: "uppercase" }}>
             بتسجيل دخولك توافق على شروط الخدمة
-          </div>
-
-          {/* mock telemetry beneath */}
-          <div style={{ marginTop: 24, padding: 12, background: `${p.bg0}cc`, border: `1px solid ${p.border}`, display: "flex", justifyContent: "space-between", gap: 14 }}>
-            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: p.dim, letterSpacing: ".18em" }}>
-              ● NODE EU-W2
-            </span>
-            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: p.accent2, letterSpacing: ".18em" }}>
-              SSL · END-TO-END · NO_TRACK
-            </span>
           </div>
         </div>
       </div>

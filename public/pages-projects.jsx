@@ -606,6 +606,10 @@ function SettingsPage({ p, navigate, credits = 4820 }) {
                 كل المفاتيح مشفرة. لا نخزّن كلمات السر، ولا نشارك بياناتك مع أطراف ثالثة.
               </div>
             </div>
+
+            <div style={{ marginTop: 10 }}>
+              <CrunchBtn p={p} label="تسجيل خروج" icon="↯" full onClick={() => window.CM_AUTH?.logout?.(navigate)} />
+            </div>
           </div>
 
           {/* content */}

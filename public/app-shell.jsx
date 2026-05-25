@@ -2,32 +2,78 @@
 
 const { useState: _u, useEffect: _e, useRef: _r } = React;
 
-function cmStoredUser() {
+
+// ---- Auth storage helpers: single source of truth for logged-in user
+function cmGetStoredUser() {
   try {
     const raw = localStorage.getItem("cm_user");
-    if (!raw) return { name: "Operator", email: "operator@content.machine" };
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
-    const safeName = String(parsed.name || parsed.email || "Operator").trim() || "Operator";
+    if (!parsed || !parsed.email) return null;
+    const safeName = (parsed.name || parsed.email || "مشغل").trim();
     return {
       ...parsed,
       name: safeName,
-      email: parsed.email || "",
-      initial: safeName[0] || "O",
+      initial: safeName.charAt(0).toUpperCase(),
     };
   } catch (_) {
-    return { name: "Operator", email: "operator@content.machine", initial: "O" };
+    return null;
   }
 }
 
-function cmLogout(navigate, onLogout) {
-  localStorage.removeItem("cm_token");
-  localStorage.removeItem("cm_user");
-  if (typeof onLogout === "function") return onLogout();
-  if (typeof navigate === "function") return navigate("auth");
+function cmSaveAuthSession(token, user) {
+  if (token) localStorage.setItem("cm_token", token);
+  if (user) localStorage.setItem("cm_user", JSON.stringify(user));
+  window.dispatchEvent(new Event("cm-auth-changed"));
 }
 
+function cmClearAuthSession() {
+  localStorage.removeItem("cm_token");
+  localStorage.removeItem("cm_user");
+  window.dispatchEvent(new Event("cm-auth-changed"));
+}
+
+function cmGetAuthToken() {
+  return localStorage.getItem("cm_token") || "";
+}
+
+function cmIsAuthenticated() {
+  return Boolean(cmGetAuthToken() && cmGetStoredUser());
+}
+
+async function cmLogout(navigate) {
+  const token = cmGetAuthToken();
+  try {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  } catch (_) {}
+  cmClearAuthSession();
+  if (typeof navigate === "function") navigate("auth");
+}
+
+window.CM_AUTH = {
+  getUser: cmGetStoredUser,
+  save: cmSaveAuthSession,
+  clear: cmClearAuthSession,
+  token: cmGetAuthToken,
+  isAuthed: cmIsAuthenticated,
+  logout: cmLogout,
+};
+
 // ---- AuthedNav: top bar shown on all logged-in pages
-function AuthedNav({ p, current, navigate, credits = 4820, user = cmStoredUser(), onLogout }) {
+function AuthedNav({ p, current, navigate, credits = 4820, user, onLogout }) {
+  const currentUser = user || cmGetStoredUser() || { name: "مشغل", email: "operator@content.machine", initial: "م" };
+  const safeName = (currentUser.name || currentUser.email || "مشغل").trim();
+  const safeInitial = (currentUser.initial || safeName.charAt(0) || "م").toUpperCase();
+
+  function handleLogout() {
+    if (window.CM_AUTH?.logout) return window.CM_AUTH.logout(typeof onLogout === "function" ? onLogout : navigate);
+    cmClearAuthSession();
+    if (typeof onLogout === "function") onLogout();
+    else navigate("auth");
+  }
   const tabs = [
     { id: "dashboard",   l: "الرئيسية",     icon: "◇" },
     { id: "service-agent", l: "وكيل الخدمة", icon: "✦", hot: true },
@@ -93,8 +139,8 @@ function AuthedNav({ p, current, navigate, credits = 4820, user = cmStoredUser()
           display: "flex", alignItems: "center", justifyContent: "center",
           fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: p.bg0, letterSpacing: ".05em",
           cursor: "pointer",
-        }} onClick={() => cmLogout(navigate, onLogout)}>
-          {(user.initial || user.name || "O")[0]}
+        }} onClick={handleLogout} title={safeName}>
+          {safeInitial}
         </div>
       </div>
     </nav>

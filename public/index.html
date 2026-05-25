@@ -62,6 +62,14 @@ const ROUTES = {
   settings: "settings",
 };
 
+const PRIVATE_ROUTES = new Set([
+  "dashboard", "service-agent", "film-hub", "create", "market-hub", "market", "ugc-avatar", "library", "project-detail", "settings"
+]);
+
+function cmBrowserAuthed() {
+  return Boolean(window.CM_AUTH?.isAuthed?.());
+}
+
 const PATH_ALIASES = {
   "": "landing",
   "index": "landing",
@@ -108,13 +116,32 @@ function App() {
 
   React.useEffect(() => {
     const onHash = () => setRoute(readRoute());
+    const onAuth = () => {
+      const nextRoute = readRoute();
+      if (PRIVATE_ROUTES.has(nextRoute) && !cmBrowserAuthed()) {
+        navigate("auth");
+      } else {
+        setRoute(nextRoute);
+      }
+    };
     window.addEventListener("hashchange", onHash);
+    window.addEventListener("cm-auth-changed", onAuth);
+    window.addEventListener("pageshow", onAuth);
     window.__cmNav = navigate;
+    onAuth();
     return () => {
       window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("cm-auth-changed", onAuth);
+      window.removeEventListener("pageshow", onAuth);
       delete window.__cmNav;
     };
   }, []);
+
+  React.useEffect(() => {
+    if (PRIVATE_ROUTES.has(route) && !cmBrowserAuthed()) {
+      navigate("auth");
+    }
+  }, [route]);
 
   function navigate(target, nextParams = {}) {
     const next = cleanRoute(target);
@@ -129,20 +156,12 @@ function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function readStoredUser() {
-    try {
-      const raw = localStorage.getItem("cm_user");
-      if (!raw) return { name: "Operator", email: "operator@content.machine", initial: "O" };
-      const parsed = JSON.parse(raw);
-      const safeName = String(parsed.name || parsed.email || "Operator").trim() || "Operator";
-      return { ...parsed, name: safeName, initial: safeName[0] || "O" };
-    } catch (_) {
-      return { name: "Operator", email: "operator@content.machine", initial: "O" };
-    }
+  const common = { p, navigate, user: window.CM_AUTH?.getUser?.() };
+
+  if (PRIVATE_ROUTES.has(route) && !cmBrowserAuthed()) {
+    return <AuthPage {...common} />;
   }
 
-  const user = readStoredUser();
-  const common = { p, navigate, user };
   let view;
 
   switch (route) {

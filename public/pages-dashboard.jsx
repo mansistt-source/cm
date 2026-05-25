@@ -7,12 +7,13 @@ const PLANS_DASH = [
   { key: "agency",  name: "الأقصى",     price: 1500, credits: 19500, badge: "للوكالات" },
 ];
 
-function DashboardPage({ p, navigate, user = { name: "أحمد", email: "ahmed@op.r74", initial: "أ" }, credits = 4820 }) {
+function DashboardPage({ p, navigate, user, credits = 4820 }) {
   const [tab, setTab] = React.useState("home");
+  const currentUser = user || window.CM_AUTH?.getUser?.() || { name: "مشغل", email: "operator@content.machine", initial: "م" };
 
   return (
     <PageFrame p={p} density={0.35}>
-      <AuthedNav p={p} current="dashboard" navigate={navigate} credits={credits} user={user} onLogout={() => navigate("auth")} />
+      <AuthedNav p={p} current="dashboard" navigate={navigate} credits={credits} user={currentUser} onLogout={() => navigate("auth")} />
 
       {/* sub-tabs */}
       <div style={{ borderBottom: `1px solid ${p.border}`, padding: "0 32px", display: "flex", gap: 4, background: p.bg0 }}>
@@ -40,9 +41,9 @@ function DashboardPage({ p, navigate, user = { name: "أحمد", email: "ahmed@o
       </div>
 
       <div style={{ padding: "32px", maxWidth: 1400, margin: "0 auto" }}>
-        {tab === "home"     && <DashHome p={p} navigate={navigate} user={user} credits={credits} />}
+        {tab === "home"     && <DashHome p={p} navigate={navigate} user={currentUser} credits={credits} />}
         {tab === "billing"  && <DashBilling p={p} />}
-        {tab === "security" && <DashSecurity p={p} user={user} />}
+        {tab === "security" && <DashSecurity p={p} user={currentUser} />}
       </div>
     </PageFrame>
   );
@@ -394,17 +395,136 @@ function BillingPlan({ p, plan, active }) {
 
 // ---------- SECURITY tab ----------
 function DashSecurity({ p, user }) {
+  const [localUser, setLocalUser] = React.useState(window.CM_AUTH?.getUser?.() || user || {});
   const [cur, setCur] = React.useState("");
   const [nw, setNw] = React.useState("");
   const [conf, setConf] = React.useState("");
   const [msg, setMsg] = React.useState("");
+  const [err, setErr] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+
+  const [twoFaSetup, setTwoFaSetup] = React.useState(null);
+  const [twoFaCode, setTwoFaCode] = React.useState("");
+  const [disablePass, setDisablePass] = React.useState("");
+
+  function authHeaders() {
+    const token = window.CM_AUTH?.token?.() || "";
+    return token ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+  }
+
+  function saveUser(nextUser, nextToken) {
+    if (nextUser) {
+      window.CM_AUTH?.save(nextToken || window.CM_AUTH?.token?.(), nextUser);
+      setLocalUser(window.CM_AUTH?.getUser?.() || nextUser);
+    }
+  }
+
+  async function changePassword() {
+    setErr(""); setMsg("");
+    if (!nw || !conf) return setErr("اكتب كلمة السر الجديدة والتأكيد");
+    if (nw !== conf) return setErr("كلمة السر الجديدة غير متطابقة");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/security/change-password", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ currentPassword: cur, newPassword: nw, confirmPassword: conf }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || "فشل تغيير كلمة السر");
+      saveUser(data.user, data.token);
+      setCur(""); setNw(""); setConf("");
+      setMsg("✓ تم تغيير كلمة السر وتحديث الجلسة");
+    } catch (error) {
+      setErr(error.message || "فشل تغيير كلمة السر");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function setup2FA() {
+    setErr(""); setMsg(""); setLoading(true);
+    try {
+      const res = await fetch("/api/security/2fa/setup", { method: "POST", headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || "فشل إعداد 2FA");
+      setTwoFaSetup(data);
+      setMsg("انسخ السر في تطبيق Authenticator ثم اكتب الكود للتفعيل");
+    } catch (error) {
+      setErr(error.message || "فشل إعداد 2FA");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function enable2FA() {
+    setErr(""); setMsg("");
+    if (!twoFaCode.trim()) return setErr("اكتب رمز 2FA");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/security/2fa/enable", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ code: twoFaCode.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || "فشل تفعيل 2FA");
+      saveUser(data.user);
+      setTwoFaSetup(null); setTwoFaCode("");
+      setMsg("✓ تم تفعيل 2FA");
+    } catch (error) {
+      setErr(error.message || "فشل تفعيل 2FA");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function disable2FA() {
+    setErr(""); setMsg("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/security/2fa/disable", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ password: disablePass, code: twoFaCode.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || "فشل إيقاف 2FA");
+      saveUser(data.user);
+      setTwoFaCode(""); setDisablePass("");
+      setMsg("✓ تم إيقاف 2FA");
+    } catch (error) {
+      setErr(error.message || "فشل إيقاف 2FA");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function logoutAll() {
+    setErr(""); setMsg(""); setLoading(true);
+    try {
+      const res = await fetch("/api/security/logout-all", { method: "POST", headers: authHeaders() });
+      if (!res.ok) throw new Error("فشل إنهاء الجلسات");
+      window.CM_AUTH?.clear?.();
+      if (window.__cmNav) window.__cmNav("auth");
+    } catch (error) {
+      setErr(error.message || "فشل إنهاء الجلسات");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const activeUser = localUser || user || { name: "مشغل", email: "operator@content.machine" };
+  const userInitial = activeUser.initial || (activeUser.name || activeUser.email || "م").charAt(0).toUpperCase();
+  const twoFaOn = Boolean(activeUser.twoFactorEnabled);
 
   return (
     <>
-      <SectionHead p={p} code="// ACCOUNT_INTEGRITY" title="الأمان" sub="بيانات المشغّل وتغيير كلمة السر" />
+      <SectionHead p={p} code="// ACCOUNT_INTEGRITY" title="الأمان" sub="بيانات المشغّل · 2FA · تغيير كلمة السر" />
+
+      {(err || msg) && <div style={{ marginBottom: 14 }}>{err ? <Toast p={p} type="error">{err}</Toast> : <Toast p={p} type="success">{msg}</Toast>}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        {/* identity */}
         <Panel p={p} padding={24}>
           <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.accent, letterSpacing: ".22em", marginBottom: 14 }}>// OPERATOR_ID</div>
           <div style={{ display: "flex", gap: 16, alignItems: "center", paddingBottom: 18, borderBottom: `1px solid ${p.border}`, marginBottom: 18 }}>
@@ -413,65 +533,69 @@ function DashSecurity({ p, user }) {
               clipPath: "polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%)",
               display: "flex", alignItems: "center", justifyContent: "center",
               fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, color: p.bg0, letterSpacing: ".05em",
-            }}>{user.initial || user.name[0]}</div>
+            }}>{userInitial}</div>
             <div>
-              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, color: p.fg, letterSpacing: ".05em" }}>{user.name}</div>
-              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".15em", marginTop: 3 }}>{user.email}</div>
+              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, color: p.fg, letterSpacing: ".05em" }}>{activeUser.name}</div>
+              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".15em", marginTop: 3 }}>{activeUser.email}</div>
               <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
                 <Tag p={p} color={p.accent2}>VERIFIED</Tag>
-                <Tag p={p}>RANK_S</Tag>
+                <Tag p={p} color={twoFaOn ? p.accent2 : p.warn}>2FA {twoFaOn ? "ON" : "OFF"}</Tag>
               </div>
             </div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".1em" }}>
-            <div style={{ display: "flex", justifyContent: "space-between" }}><span>عضو منذ</span><span style={{ color: p.fg }}>4 يناير 2026</span></div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}><span>آخر دخول</span><span style={{ color: p.fg }}>منذ 12 دقيقة</span></div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}><span>IP</span><span style={{ color: p.fg }}>147.xx.xx.42</span></div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}><span>2FA</span><span style={{ color: p.warn }}>OFF</span></div>
-          </div>
-          <div style={{ marginTop: 16 }}>
-            <CrunchBtn p={p} label="تفعيل 2FA" solid icon="⌬" full />
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {!twoFaOn && !twoFaSetup && <CrunchBtn p={p} label={loading ? "جاري الإعداد..." : "إعداد 2FA"} solid icon="⌬" full onClick={setup2FA} disabled={loading} />}
+
+            {twoFaSetup && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".08em", lineHeight: 1.7, direction: "ltr", wordBreak: "break-all" }}>
+                  SECRET: <span style={{ color: p.fg }}>{twoFaSetup.secret}</span><br />
+                  URI: <span style={{ color: p.fg }}>{twoFaSetup.otpauthUrl}</span>
+                </div>
+                <TacticalInput p={p} label="رمز التطبيق" value={twoFaCode} onChange={setTwoFaCode} placeholder="123456" rtl={false} />
+                <CrunchBtn p={p} label="تفعيل 2FA" solid icon="▶" full onClick={enable2FA} disabled={loading} />
+              </div>
+            )}
+
+            {twoFaOn && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <TacticalInput p={p} label="كلمة السر" type="password" value={disablePass} onChange={setDisablePass} placeholder="••••••••" rtl={false} />
+                <TacticalInput p={p} label="رمز 2FA" value={twoFaCode} onChange={setTwoFaCode} placeholder="123456" rtl={false} />
+                <CrunchBtn p={p} label="إيقاف 2FA" icon="!" full onClick={disable2FA} disabled={loading} />
+              </div>
+            )}
           </div>
         </Panel>
 
-        {/* password */}
         <Panel p={p} padding={24}>
           <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.accent, letterSpacing: ".22em", marginBottom: 14 }}>// PASSWORD_ROTATE</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <TacticalInput p={p} label="الحالية" type="password" value={cur} onChange={setCur} placeholder="••••••••" rtl={false} />
-            <TacticalInput p={p} label="الجديدة" type="password" value={nw} onChange={setNw} placeholder="••••••••" hint="٨ أحرف على الأقل · حرف كبير + رقم" rtl={false} />
+            <TacticalInput p={p} label="الحالية" type="password" value={cur} onChange={setCur} placeholder="••••••••" rtl={false} hint={activeUser.loginMethod === "google" ? "لو حسابك Google فقط اتركها فارغة عند إضافة كلمة سر لأول مرة" : undefined} />
+            <TacticalInput p={p} label="الجديدة" type="password" value={nw} onChange={setNw} placeholder="••••••••" hint="٨ أحرف على الأقل · حرف كبير + حرف صغير + رقم" rtl={false} />
             <TacticalInput p={p} label="التأكيد" type="password" value={conf} onChange={setConf} placeholder="••••••••" rtl={false} />
-            {msg && <Toast p={p} type="success">{msg}</Toast>}
             <div style={{ marginTop: 4 }}>
-              <CrunchBtn p={p} label="حفظ كلمة السر" solid icon="▶" full onClick={() => setMsg("✓ تم تغيير كلمة السر")} />
+              <CrunchBtn p={p} label={loading ? "جاري الحفظ..." : "حفظ كلمة السر"} solid icon="▶" full onClick={changePassword} disabled={loading} />
             </div>
           </div>
         </Panel>
       </div>
 
-      {/* sessions */}
       <Panel p={p} padding={20} style={{ marginTop: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.accent, letterSpacing: ".22em" }}>// ACTIVE_SESSIONS</div>
-          <CrunchBtn p={p} label="إنهاء كل الجلسات" small icon="!" />
+          <CrunchBtn p={p} label="إنهاء كل الجلسات" small icon="!" onClick={logoutAll} disabled={loading} />
         </div>
-        {[
-          ["MacOS · Chrome",    "EU-W2 · 147.xx.xx.42", "هذه الجلسة", true],
-          ["iOS · Safari",       "EU-W2 · 92.xx.xx.18",  "منذ يومين", false],
-          ["Windows · Firefox",  "US-E1 · 64.xx.xx.91",  "منذ أسبوع", false],
-        ].map((s, i) => (
-          <div key={i} style={{
-            display: "grid", gridTemplateColumns: "1fr 1fr auto auto",
-            gap: 16, alignItems: "center",
-            padding: "10px 0", borderBottom: i < 2 ? `1px dashed ${p.border}` : "none",
-          }}>
-            <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: p.fg }}>{s[0]}</span>
-            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".1em" }}>{s[1]}</span>
-            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".1em" }}>{s[2]}</span>
-            {s[3] ? <Tag p={p} color={p.accent2}>● CURRENT</Tag> : <a style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.warn, letterSpacing: ".18em", cursor: "pointer" }}>↳ ENDED</a>}
-          </div>
-        ))}
+        <div style={{
+          display: "grid", gridTemplateColumns: "1fr 1fr auto auto",
+          gap: 16, alignItems: "center",
+          padding: "10px 0",
+        }}>
+          <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: p.fg }}>Current Browser</span>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".1em" }}>SECURE_SESSION</span>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".1em" }}>الآن</span>
+          <Tag p={p} color={p.accent2}>● CURRENT</Tag>
+        </div>
       </Panel>
     </>
   );

@@ -17,6 +17,8 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .map((x) => x.trim().toLowerCase())
   .filter(Boolean);
 const PAYMENT_INSTRUCTIONS = process.env.PAYMENT_INSTRUCTIONS || 'Payment link is not configured yet. Contact admin.';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '';
+const COOKIE_SECURE = process.env.NODE_ENV === 'production' ? '; Secure' : '';
 
 const PACKAGES = {
   starter: { key: 'starter', name: 'Starter', priceUsd: 150 },
@@ -64,10 +66,12 @@ function json(res, status, data) {
 
 function notFound(res) {
   json(res, 404, { error: 'not_found' });
+  return true;
 }
 
 function fail(res, status, code, message) {
   json(res, status, { error: code, message });
+  return true;
 }
 
 function parseCookies(req) {
@@ -94,6 +98,7 @@ function verifyToken(token) {
   if (!token || !token.includes('.')) return null;
   const [body, sig] = token.split('.');
   const expected = crypto.createHmac('sha256', JWT_SECRET).update(body).digest('base64url');
+  if (Buffer.byteLength(sig) !== Buffer.byteLength(expected)) return null;
   if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
   const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
   if (payload.exp && payload.exp < Date.now()) return null;
@@ -101,7 +106,19 @@ function verifyToken(token) {
 }
 
 function makeToken(user) {
-  return signToken({ userId: user.id, role: user.role, exp: Date.now() + 1000 * 60 * 60 * 24 * 7 });
+  return signToken({ purpose: 'auth', userId: user.id, role: user.role, sv: Number(user.sessionVersion || 0), exp: Date.now() + 1000 * 60 * 60 * 24 * 7 });
+}
+
+function makeTempToken(payload, minutes = 10) {
+  return signToken({ ...payload, exp: Date.now() + 1000 * 60 * minutes });
+}
+
+function setAuthCookie(res, token, maxAge = 604800) {
+  res.setHeader('set-cookie', `cm_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${COOKIE_SECURE}`);
+}
+
+function clearAuthCookie(res) {
+  res.setHeader('set-cookie', `cm_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${COOKIE_SECURE}`);
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
@@ -114,6 +131,89 @@ function checkPassword(password, salt, expectedHash) {
   return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(expectedHash));
 }
 
+
+function validatePasswordStrength(password) {
+  const value = String(password || '');
+  if (value.length < 8) return 'Password must be at least 8 characters';
+  if (!/[A-Z]/.test(value)) return 'Password must include an uppercase letter';
+  if (!/[a-z]/.test(value)) return 'Password must include a lowercase letter';
+  if (!/[0-9]/.test(value)) return 'Password must include a number';
+  return null;
+}
+
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function base32Encode(buffer) {
+  let bits = '';
+  for (const byte of buffer) bits += byte.toString(2).padStart(8, '0');
+  let out = '';
+  for (let i = 0; i < bits.length; i += 5) {
+    const chunk = bits.slice(i, i + 5).padEnd(5, '0');
+    out += BASE32_ALPHABET[parseInt(chunk, 2)];
+  }
+  return out;
+}
+function base32Decode(input) {
+  const clean = String(input || '').toUpperCase().replace(/=+$/g, '').replace(/[^A-Z2-7]/g, '');
+  let bits = '';
+  for (const c of clean) {
+    const v = BASE32_ALPHABET.indexOf(c);
+    if (v >= 0) bits += v.toString(2).padStart(5, '0');
+  }
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  return Buffer.from(bytes);
+}
+function hotp(secretBase32, counter) {
+  const key = base32Decode(secretBase32);
+  const buf = Buffer.alloc(8);
+  const big = BigInt(counter);
+  buf.writeUInt32BE(Number((big >> 32n) & 0xffffffffn), 0);
+  buf.writeUInt32BE(Number(big & 0xffffffffn), 4);
+  const hmac = crypto.createHmac('sha1', key).update(buf).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const code = ((hmac[offset] & 0x7f) << 24) | ((hmac[offset + 1] & 0xff) << 16) | ((hmac[offset + 2] & 0xff) << 8) | (hmac[offset + 3] & 0xff);
+  return String(code % 1000000).padStart(6, '0');
+}
+function verifyTotp(secretBase32, code) {
+  const clean = String(code || '').replace(/\s+/g, '');
+  if (!/^\d{6}$/.test(clean)) return false;
+  const step = Math.floor(Date.now() / 30000);
+  for (let drift = -1; drift <= 1; drift += 1) {
+    if (hotp(secretBase32, step + drift) === clean) return true;
+  }
+  return false;
+}
+function generateTotpSecret() {
+  return base32Encode(crypto.randomBytes(20));
+}
+function otpauthUrl({ email, secret }) {
+  const label = encodeURIComponent(`Content Machine:${email}`);
+  const issuer = encodeURIComponent('Content Machine');
+  return `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+}
+
+function makeTwoFactorChallenge(user) {
+  return makeTempToken({ purpose: '2fa_login', userId: user.id, sv: Number(user.sessionVersion || 0) }, 5);
+}
+
+async function verifyGoogleIdToken(idToken) {
+  if (!GOOGLE_CLIENT_ID) throw new Error('Google sign-in is not configured');
+  const token = String(idToken || '').trim();
+  if (!token) throw new Error('Missing Google credential');
+  const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error_description || 'Invalid Google token');
+  if (data.aud !== GOOGLE_CLIENT_ID) throw new Error('Google token audience mismatch');
+  if (!(data.email_verified === 'true' || data.email_verified === true)) throw new Error('Google email is not verified');
+  if (!data.email || !data.sub) throw new Error('Incomplete Google profile');
+  return {
+    googleSub: String(data.sub),
+    email: String(data.email).toLowerCase(),
+    suggestedName: String(data.name || data.email.split('@')[0] || '').trim(),
+    picture: data.picture || ''
+  };
+}
+
 async function ensureData() {
   await mkdir(DATA_DIR, { recursive: true });
   await mkdir(UPLOAD_DIR, { recursive: true });
@@ -124,9 +224,25 @@ async function ensureData() {
   }
 }
 
+function normalizeDb(db) {
+  db.users ||= [];
+  db.projects ||= [];
+  db.files ||= [];
+  db.payments ||= [];
+  db.deliverables ||= [];
+  db.users = db.users.map((u) => ({
+    sessionVersion: 0,
+    twoFactorEnabled: false,
+    twoFactorSecret: null,
+    loginMethod: u.googleSub ? 'google' : 'password',
+    ...u,
+  }));
+  return db;
+}
+
 async function loadDb() {
   await ensureData();
-  return JSON.parse(await readFile(DB_FILE, 'utf8'));
+  return normalizeDb(JSON.parse(await readFile(DB_FILE, 'utf8')));
 }
 
 async function saveDb(db) {
@@ -151,9 +267,12 @@ async function getCurrentUser(req) {
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   const cookieToken = parseCookies(req).cm_token;
   const payload = verifyToken(bearer || cookieToken);
-  if (!payload) return null;
+  if (!payload || payload.purpose !== 'auth') return null;
   const db = await loadDb();
-  return db.users.find((u) => u.id === payload.userId) || null;
+  const user = db.users.find((u) => u.id === payload.userId) || null;
+  if (!user) return null;
+  if (Number(payload.sv || 0) !== Number(user.sessionVersion || 0)) return null;
+  return user;
 }
 
 async function requireUser(req, res) {
@@ -176,7 +295,15 @@ async function requireAdmin(req, res) {
 }
 
 function publicUser(user) {
-  return { id: user.id, name: user.name, email: user.email, role: user.role, createdAt: user.createdAt };
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    loginMethod: user.loginMethod || (user.googleSub ? 'google' : 'password'),
+    twoFactorEnabled: Boolean(user.twoFactorEnabled),
+    createdAt: user.createdAt
+  };
 }
 
 function packageList() {
@@ -240,23 +367,30 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (method === 'GET' && pathname === '/api/config') {
+    json(res, 200, { googleClientId: GOOGLE_CLIENT_ID });
+    return true;
+  }
+
   if (method === 'POST' && pathname === '/api/auth/register') {
     const body = await readBody(req);
     const email = String(body.email || '').trim().toLowerCase();
-    const name = String(body.name || '').trim() || email.split('@')[0];
+    const name = String(body.name || '').trim();
     const password = String(body.password || '');
+    if (!name || name.length < 2) return fail(res, 400, 'name_required', 'Name is required');
     if (!email || !email.includes('@')) return fail(res, 400, 'bad_email', 'Valid email required');
-    if (password.length < 6) return fail(res, 400, 'weak_password', 'Password must be at least 6 characters');
+    const weak = validatePasswordStrength(password);
+    if (weak) return fail(res, 400, 'weak_password', weak);
     const db = await loadDb();
     if (db.users.some((u) => u.email === email)) return fail(res, 409, 'email_exists', 'Email already registered');
     const { salt, hash } = hashPassword(password);
     const isFirstUser = db.users.length === 0;
     const role = isFirstUser || ADMIN_EMAILS.includes(email) ? 'admin' : 'user';
-    const user = { id: id('user'), name, email, passwordSalt: salt, passwordHash: hash, role, createdAt: now(), updatedAt: now() };
+    const user = { id: id('user'), name, email, passwordSalt: salt, passwordHash: hash, googleSub: null, loginMethod: 'password', role, sessionVersion: 0, twoFactorEnabled: false, twoFactorSecret: null, createdAt: now(), updatedAt: now() };
     db.users.push(user);
     await saveDb(db);
     const token = makeToken(user);
-    res.setHeader('set-cookie', `cm_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
+    setAuthCookie(res, token);
     json(res, 201, { user: publicUser(user), token });
     return true;
   }
@@ -267,9 +401,75 @@ async function handleApi(req, res, url) {
     const password = String(body.password || '');
     const db = await loadDb();
     const user = db.users.find((u) => u.email === email);
-    if (!user || !checkPassword(password, user.passwordSalt, user.passwordHash)) return fail(res, 401, 'bad_login', 'Invalid email or password');
+    if (!user || !user.passwordHash || !checkPassword(password, user.passwordSalt, user.passwordHash)) return fail(res, 401, 'bad_login', 'Invalid email or password');
+    if (user.twoFactorEnabled) {
+      json(res, 200, { requires2fa: true, challenge: makeTwoFactorChallenge(user), userPreview: { email: user.email, name: user.name } });
+      return true;
+    }
     const token = makeToken(user);
-    res.setHeader('set-cookie', `cm_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
+    setAuthCookie(res, token);
+    json(res, 200, { user: publicUser(user), token });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/auth/google') {
+    const body = await readBody(req);
+    let profile;
+    try {
+      profile = await verifyGoogleIdToken(body.idToken);
+    } catch (error) {
+      return fail(res, 401, 'bad_google_token', error.message || 'Google sign-in failed');
+    }
+    const db = await loadDb();
+    const user = db.users.find((u) => u.email === profile.email || u.googleSub === profile.googleSub);
+    if (!user) {
+      const googleSession = makeTempToken({ purpose: 'google_complete', email: profile.email, googleSub: profile.googleSub, suggestedName: profile.suggestedName, picture: profile.picture }, 10);
+      json(res, 200, { needsName: true, email: profile.email, suggestedName: profile.suggestedName, googleSession });
+      return true;
+    }
+    user.googleSub ||= profile.googleSub;
+    user.loginMethod = user.passwordHash ? 'password_google' : 'google';
+    user.updatedAt = now();
+    await saveDb(db);
+    if (user.twoFactorEnabled) {
+      json(res, 200, { requires2fa: true, challenge: makeTwoFactorChallenge(user), userPreview: { email: user.email, name: user.name } });
+      return true;
+    }
+    const token = makeToken(user);
+    setAuthCookie(res, token);
+    json(res, 200, { user: publicUser(user), token });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/auth/google/complete') {
+    const body = await readBody(req);
+    const name = String(body.name || '').trim();
+    const payload = verifyToken(String(body.googleSession || ''));
+    if (!payload || payload.purpose !== 'google_complete') return fail(res, 401, 'bad_google_session', 'Google session expired');
+    if (!name || name.length < 2) return fail(res, 400, 'name_required', 'Name is required');
+    const db = await loadDb();
+    if (db.users.some((u) => u.email === payload.email)) return fail(res, 409, 'email_exists', 'Email already registered');
+    const isFirstUser = db.users.length === 0;
+    const role = isFirstUser || ADMIN_EMAILS.includes(String(payload.email).toLowerCase()) ? 'admin' : 'user';
+    const user = { id: id('user'), name, email: String(payload.email).toLowerCase(), googleSub: payload.googleSub, loginMethod: 'google', passwordSalt: null, passwordHash: null, role, sessionVersion: 0, twoFactorEnabled: false, twoFactorSecret: null, createdAt: now(), updatedAt: now() };
+    db.users.push(user);
+    await saveDb(db);
+    const token = makeToken(user);
+    setAuthCookie(res, token);
+    json(res, 201, { user: publicUser(user), token });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/auth/2fa/verify') {
+    const body = await readBody(req);
+    const payload = verifyToken(String(body.challenge || ''));
+    if (!payload || payload.purpose !== '2fa_login') return fail(res, 401, 'bad_2fa_session', '2FA session expired');
+    const db = await loadDb();
+    const user = db.users.find((u) => u.id === payload.userId);
+    if (!user || Number(payload.sv || 0) !== Number(user.sessionVersion || 0)) return fail(res, 401, 'bad_2fa_session', '2FA session expired');
+    if (!user.twoFactorEnabled || !verifyTotp(user.twoFactorSecret, body.code)) return fail(res, 401, 'bad_2fa_code', 'Invalid 2FA code');
+    const token = makeToken(user);
+    setAuthCookie(res, token);
     json(res, 200, { user: publicUser(user), token });
     return true;
   }
@@ -282,7 +482,93 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'POST' && pathname === '/api/auth/logout') {
-    res.setHeader('set-cookie', 'cm_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+    clearAuthCookie(res);
+    json(res, 200, { ok: true });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/security/change-password') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const body = await readBody(req);
+    const currentPassword = String(body.currentPassword || '');
+    const newPassword = String(body.newPassword || '');
+    const confirmPassword = String(body.confirmPassword || '');
+    if (newPassword !== confirmPassword) return fail(res, 400, 'password_mismatch', 'New passwords do not match');
+    const weak = validatePasswordStrength(newPassword);
+    if (weak) return fail(res, 400, 'weak_password', weak);
+    const db = await loadDb();
+    const target = db.users.find((u) => u.id === user.id);
+    if (!target) return fail(res, 404, 'user_not_found', 'User not found');
+    if (target.passwordHash && !checkPassword(currentPassword, target.passwordSalt, target.passwordHash)) return fail(res, 401, 'bad_current_password', 'Current password is incorrect');
+    const { salt, hash } = hashPassword(newPassword);
+    target.passwordSalt = salt;
+    target.passwordHash = hash;
+    target.loginMethod = target.googleSub ? 'password_google' : 'password';
+    target.sessionVersion = Number(target.sessionVersion || 0) + 1;
+    target.updatedAt = now();
+    await saveDb(db);
+    const token = makeToken(target);
+    setAuthCookie(res, token);
+    json(res, 200, { ok: true, user: publicUser(target), token });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/security/2fa/setup') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const db = await loadDb();
+    const target = db.users.find((u) => u.id === user.id);
+    if (!target) return fail(res, 404, 'user_not_found', 'User not found');
+    if (!target.twoFactorSecret) target.twoFactorSecret = generateTotpSecret();
+    target.updatedAt = now();
+    await saveDb(db);
+    json(res, 200, { secret: target.twoFactorSecret, otpauthUrl: otpauthUrl({ email: target.email, secret: target.twoFactorSecret }) });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/security/2fa/enable') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const body = await readBody(req);
+    const db = await loadDb();
+    const target = db.users.find((u) => u.id === user.id);
+    if (!target || !target.twoFactorSecret) return fail(res, 400, 'setup_required', 'Run 2FA setup first');
+    if (!verifyTotp(target.twoFactorSecret, body.code)) return fail(res, 401, 'bad_2fa_code', 'Invalid 2FA code');
+    target.twoFactorEnabled = true;
+    target.updatedAt = now();
+    await saveDb(db);
+    json(res, 200, { ok: true, user: publicUser(target) });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/security/2fa/disable') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const body = await readBody(req);
+    const db = await loadDb();
+    const target = db.users.find((u) => u.id === user.id);
+    if (!target) return fail(res, 404, 'user_not_found', 'User not found');
+    if (target.passwordHash && !checkPassword(String(body.password || ''), target.passwordSalt, target.passwordHash)) return fail(res, 401, 'bad_password', 'Password is incorrect');
+    if (target.twoFactorEnabled && !verifyTotp(target.twoFactorSecret, body.code)) return fail(res, 401, 'bad_2fa_code', 'Invalid 2FA code');
+    target.twoFactorEnabled = false;
+    target.twoFactorSecret = null;
+    target.updatedAt = now();
+    await saveDb(db);
+    json(res, 200, { ok: true, user: publicUser(target) });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/security/logout-all') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const db = await loadDb();
+    const target = db.users.find((u) => u.id === user.id);
+    if (!target) return fail(res, 404, 'user_not_found', 'User not found');
+    target.sessionVersion = Number(target.sessionVersion || 0) + 1;
+    target.updatedAt = now();
+    await saveDb(db);
+    clearAuthCookie(res);
     json(res, 200, { ok: true });
     return true;
   }
@@ -571,7 +857,7 @@ async function serveStatic(req, res, url) {
     const s = await stat(filePath);
     if (s.isDirectory()) filePath = path.join(filePath, 'index.html');
     const ext = path.extname(filePath);
-    res.writeHead(200, { 'content-type': mime[ext] || 'application/octet-stream' });
+    res.writeHead(200, { 'content-type': mime[ext] || 'application/octet-stream', 'cache-control': ['.html', '.jsx', '.js'].includes(ext) ? 'no-store' : 'public, max-age=3600' });
     createReadStream(filePath).on('error', () => serveIndex(res)).pipe(res);
   } catch {
     await serveIndex(res);
@@ -581,7 +867,7 @@ async function serveStatic(req, res, url) {
 async function serveIndex(res) {
   try {
     const html = await readFile(path.join(publicDir, 'index.html'));
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(html);
   } catch {
     fail(res, 500, 'missing_frontend', 'public/index.html not found');
