@@ -156,20 +156,8 @@ class AppErrorBoundary extends React.Component {
 function App() {
   const [route, setRoute] = React.useState(readRoute);
   const [params, setParams] = React.useState({});
-  const [loading, setLoading] = React.useState(false);
-
-  function flashLoader() {
-    window.clearTimeout(window.__cmRouteLoaderDelayTimer);
-    window.clearTimeout(window.__cmRouteLoaderHideTimer);
-    window.__cmRouteLoaderDelayTimer = window.setTimeout(() => setLoading(true), 2000);
-    window.__cmRouteLoaderHideTimer = window.setTimeout(() => {
-      window.clearTimeout(window.__cmRouteLoaderDelayTimer);
-      setLoading(false);
-    }, 4200);
-  }
-
   React.useEffect(() => {
-    const onHash = () => { flashLoader(); setRoute(readRoute()); };
+    const onHash = () => { setRoute(readRoute()); };
     const onAuth = () => {
       const nextRoute = readRoute();
       if (PRIVATE_ROUTES.has(nextRoute) && !cmBrowserAuthed()) {
@@ -187,17 +175,9 @@ function App() {
       window.removeEventListener("hashchange", onHash);
       window.removeEventListener("cm-auth-changed", onAuth);
       window.removeEventListener("pageshow", onAuth);
-      window.clearTimeout(window.__cmRouteLoaderDelayTimer);
-      window.clearTimeout(window.__cmRouteLoaderHideTimer);
       delete window.__cmNav;
     };
   }, []);
-
-  React.useEffect(() => {
-    window.clearTimeout(window.__cmRouteLoaderDelayTimer);
-    const t = window.setTimeout(() => setLoading(false), 90);
-    return () => window.clearTimeout(t);
-  }, [route]);
 
   React.useEffect(() => {
     if (PRIVATE_ROUTES.has(route) && !cmBrowserAuthed()) {
@@ -207,7 +187,6 @@ function App() {
 
   function navigate(target, nextParams = {}) {
     const next = cleanRoute(target);
-    flashLoader();
     setParams(nextParams || {});
     if (next === "404") {
       window.location.hash = "#/404";
@@ -222,7 +201,7 @@ function App() {
   const common = { p, navigate, user: window.CM_AUTH?.getUser?.() };
 
   if (PRIVATE_ROUTES.has(route) && !cmBrowserAuthed()) {
-    return <><RouteLoader p={p} show={loading} /><AuthPage {...common} /></>;
+    return <AuthPage {...common} />;
   }
 
   let view;
@@ -271,10 +250,7 @@ function App() {
       view = <NotFoundPage {...common} />;
   }
 
-  return <>
-    <RouteLoader p={p} show={loading} />
-    <AppErrorBoundary key={route}>{view}</AppErrorBoundary>
-  </>;
+  return <AppErrorBoundary key={route}>{view}</AppErrorBoundary>;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
