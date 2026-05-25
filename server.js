@@ -398,7 +398,7 @@ async function ensureData() {
   try {
     await stat(DB_FILE);
   } catch {
-    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [], sessions: [], twoFactorCodes: [] }, null, 2));
+    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [], sessions: [], twoFactorCodes: [], wallets: [], creditLedger: [], activityLog: [], subscriptions: [] }, null, 2));
   }
 }
 
@@ -410,6 +410,10 @@ function normalizeDb(db) {
   db.deliverables ||= [];
   db.sessions ||= [];
   db.twoFactorCodes ||= [];
+  db.wallets ||= [];
+  db.creditLedger ||= [];
+  db.activityLog ||= [];
+  db.subscriptions ||= [];
   db.users = db.users.map((u) => ({
     sessionVersion: 0,
     twoFactorEnabled: false,
@@ -512,6 +516,117 @@ function assertProjectOwnerOrAdmin(user, project) {
   return project.userId === user.id || user.role === 'admin';
 }
 
+
+const CREDITS_PER_USD = Number(process.env.CREDITS_PER_USD || 100);
+const ACTIVITY_LOG_LIMIT = Number(process.env.ACTIVITY_LOG_LIMIT || 5000);
+
+function publicWallet(wallet) {
+  return {
+    userId: wallet.userId,
+    balanceCredits: Number(wallet.balanceCredits || 0),
+    lifetimePurchasedCredits: Number(wallet.lifetimePurchasedCredits || 0),
+    lifetimeUsedCredits: Number(wallet.lifetimeUsedCredits || 0),
+    updatedAt: wallet.updatedAt
+  };
+}
+
+function getWallet(db, userId) {
+  db.wallets ||= [];
+  let wallet = db.wallets.find((w) => w.userId === userId);
+  if (!wallet) {
+    wallet = { userId, balanceCredits: 0, lifetimePurchasedCredits: 0, lifetimeUsedCredits: 0, createdAt: now(), updatedAt: now() };
+    db.wallets.push(wallet);
+  }
+  return wallet;
+}
+
+function sanitizeMeta(meta = {}) {
+  try {
+    return JSON.parse(JSON.stringify(meta));
+  } catch {
+    return {};
+  }
+}
+
+function pushActivity(db, { userId, sessionId = null, action, entityType = 'system', entityId = null, summary = '', metadata = {}, req = null }) {
+  if (!userId || !action) return null;
+  db.activityLog ||= [];
+  const event = {
+    id: id('activity'),
+    userId,
+    sessionId,
+    action,
+    entityType,
+    entityId,
+    summary: String(summary || '').slice(0, 260),
+    metadata: sanitizeMeta(metadata),
+    ip: req ? clientIp(req) : '',
+    userAgent: req ? String(req.headers['user-agent'] || '') : '',
+    createdAt: now()
+  };
+  db.activityLog.push(event);
+  if (db.activityLog.length > ACTIVITY_LOG_LIMIT) db.activityLog = db.activityLog.slice(-ACTIVITY_LOG_LIMIT);
+  return event;
+}
+
+function addCreditLedger(db, { userId, projectId = null, paymentId = null, type, deltaCredits, reason = '', metadata = {}, req = null, sessionId = null }) {
+  db.creditLedger ||= [];
+  const wallet = getWallet(db, userId);
+  const delta = Number(deltaCredits || 0);
+  wallet.balanceCredits = Number(wallet.balanceCredits || 0) + delta;
+  if (delta > 0) wallet.lifetimePurchasedCredits = Number(wallet.lifetimePurchasedCredits || 0) + delta;
+  if (delta < 0) wallet.lifetimeUsedCredits = Number(wallet.lifetimeUsedCredits || 0) + Math.abs(delta);
+  wallet.updatedAt = now();
+  const entry = {
+    id: id('credit'),
+    userId,
+    projectId,
+    paymentId,
+    type,
+    deltaCredits: delta,
+    balanceAfter: wallet.balanceCredits,
+    reason: String(reason || '').slice(0, 260),
+    metadata: sanitizeMeta(metadata),
+    sessionId,
+    ip: req ? clientIp(req) : '',
+    createdAt: now()
+  };
+  db.creditLedger.push(entry);
+  pushActivity(db, {
+    userId,
+    sessionId,
+    action: `credits.${type}`,
+    entityType: projectId ? 'project' : 'wallet',
+    entityId: projectId || userId,
+    summary: `${type}: ${delta} credits`,
+    metadata: { paymentId, deltaCredits: delta, balanceAfter: wallet.balanceCredits, ...sanitizeMeta(metadata) },
+    req
+  });
+  return { wallet, entry };
+}
+
+function projectSummary(project) {
+  return {
+    id: project.id,
+    title: project.title,
+    serviceType: project.serviceType,
+    packageKey: project.packageKey,
+    priceUsd: project.priceUsd,
+    status: project.status,
+    paymentStatus: project.paymentStatus
+  };
+}
+
+function paymentCredits(amountUsd) {
+  return Math.max(0, Math.round(Number(amountUsd || 0) * CREDITS_PER_USD));
+}
+
+function requirePositiveCredits(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.round(n);
+}
+
 async function saveBase64File({ projectId, fileName, mimeType, dataBase64 }) {
   const cleanName = String(fileName || 'upload.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
   const fileId = id('file');
@@ -587,8 +702,11 @@ async function handleApi(req, res, url) {
     const role = isFirstUser || ADMIN_EMAILS.includes(email) ? 'admin' : 'user';
     const user = { id: id('user'), name, email, passwordSalt: salt, passwordHash: hash, googleSub: null, loginMethod: 'password', role, sessionVersion: 0, twoFactorEnabled: false, twoFactorSecret: null, twoFactorMethod: 'email', createdAt: now(), updatedAt: now() };
     db.users.push(user);
+    getWallet(db, user.id);
+    pushActivity(db, { userId: user.id, action: 'auth.registered', entityType: 'user', entityId: user.id, summary: 'Account created with email/password', req });
     await saveDb(db);
     const session = createSession(db, user, req, 'password_register');
+    pushActivity(db, { userId: user.id, sessionId: session.id, action: 'auth.session_started', entityType: 'session', entityId: session.id, summary: 'New password registration session', req });
     await saveDb(db);
     const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
@@ -611,6 +729,7 @@ async function handleApi(req, res, url) {
       return true;
     }
     const session = createSession(db, user, req, 'password_login');
+    pushActivity(db, { userId: user.id, sessionId: session.id, action: 'auth.login', entityType: 'session', entityId: session.id, summary: 'User logged in with password', req });
     await saveDb(db);
     const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
@@ -645,6 +764,7 @@ async function handleApi(req, res, url) {
       return true;
     }
     const session = createSession(db, user, req, 'google_login');
+    pushActivity(db, { userId: user.id, sessionId: session.id, action: 'auth.login', entityType: 'session', entityId: session.id, summary: 'User logged in with Google', req });
     await saveDb(db);
     const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
@@ -666,6 +786,7 @@ async function handleApi(req, res, url) {
     db.users.push(user);
     await saveDb(db);
     const session = createSession(db, user, req, 'google_register');
+    pushActivity(db, { userId: user.id, sessionId: session.id, action: 'auth.session_started', entityType: 'session', entityId: session.id, summary: 'New Google registration session', req });
     await saveDb(db);
     const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
@@ -684,6 +805,7 @@ async function handleApi(req, res, url) {
     const verified = verifyEmailSecurityCode(db, user, 'login', body.code);
     if (!verified.ok) return fail(res, 401, 'bad_2fa_code', 'Invalid or expired email code');
     const session = createSession(db, user, req, '2fa_email_login');
+    pushActivity(db, { userId: user.id, sessionId: session.id, action: 'auth.login_2fa', entityType: 'session', entityId: session.id, summary: 'User completed email 2FA login', req });
     await saveDb(db);
     const token = makeTokenForSession(user, session);
     setAuthCookie(res, token);
@@ -712,6 +834,50 @@ async function handleApi(req, res, url) {
     target.updatedAt = now();
     await saveDb(db);
     json(res, 200, { ok: true, user: publicUser(target) });
+    return true;
+  }
+
+
+  if (method === 'GET' && pathname === '/api/me/wallet') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const wallet = getWallet(ctx.db, ctx.user.id);
+    await saveDb(ctx.db);
+    json(res, 200, { wallet: publicWallet(wallet) });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/me/activity') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') || 50)));
+    const activities = (ctx.db.activityLog || [])
+      .filter((e) => e.userId === ctx.user.id)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
+    json(res, 200, { activities });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/me/credits/ledger') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') || 50)));
+    const ledger = (ctx.db.creditLedger || [])
+      .filter((e) => e.userId === ctx.user.id)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
+    json(res, 200, { wallet: publicWallet(getWallet(ctx.db, ctx.user.id)), ledger });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/me/subscriptions') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const subscriptions = (ctx.db.subscriptions || [])
+      .filter((s) => s.userId === ctx.user.id)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    json(res, 200, { subscriptions });
     return true;
   }
 
@@ -889,6 +1055,7 @@ async function handleApi(req, res, url) {
       updatedAt: now()
     };
     db.projects.push(project);
+    pushActivity(db, { userId: user.id, sessionId: null, action: 'project.created', entityType: 'project', entityId: project.id, summary: `Created project: ${project.title}`, metadata: { project: projectSummary(project) }, req });
     await saveDb(db);
     json(res, 201, { project });
     return true;
@@ -911,6 +1078,8 @@ async function handleApi(req, res, url) {
     const project = db.projects.find((p) => p.id === params.id);
     if (!project) return notFound(res);
     if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    pushActivity(db, { userId: user.id, action: 'project.opened', entityType: 'project', entityId: project.id, summary: `Opened project: ${project.title}`, metadata: { project: projectSummary(project) }, req });
+    await saveDb(db);
     json(res, 200, { project });
     return true;
   }
@@ -923,6 +1092,8 @@ async function handleApi(req, res, url) {
     const project = db.projects.find((p) => p.id === params.id);
     if (!project) return notFound(res);
     if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const beforeProject = { ...project };
+    const changedFields = [];
     if (body.title !== undefined) project.title = String(body.title).slice(0, 120);
     if (body.brief !== undefined) project.brief = String(body.brief);
     if (body.serviceType !== undefined) {
@@ -941,7 +1112,11 @@ async function handleApi(req, res, url) {
     }
     if (body.style !== undefined) project.style = String(body.style);
     if (body.durationSeconds !== undefined) project.durationSeconds = Number(body.durationSeconds || 0);
+    ['title','brief','serviceType','packageKey','priceUsd','style','durationSeconds','paymentStatus','status'].forEach((field) => {
+      if (JSON.stringify(beforeProject[field]) !== JSON.stringify(project[field])) changedFields.push(field);
+    });
     project.updatedAt = now();
+    pushActivity(db, { userId: user.id, action: 'project.updated', entityType: 'project', entityId: project.id, summary: `Updated project: ${project.title}`, metadata: { changedFields, before: projectSummary(beforeProject), after: projectSummary(project) }, req });
     await saveDb(db);
     json(res, 200, { project });
     return true;
@@ -956,6 +1131,7 @@ async function handleApi(req, res, url) {
     const project = db.projects.find((p) => p.id === params.id);
     if (!project) return notFound(res);
     if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    pushActivity(db, { userId: user.id, action: 'project.deleted', entityType: 'project', entityId: project.id, summary: `Deleted project: ${project.title}`, metadata: { project: projectSummary(project) }, req });
     db.projects = db.projects.filter((p) => p.id !== project.id);
     db.files = db.files.filter((f) => f.projectId !== project.id);
     db.payments = db.payments.filter((pay) => pay.projectId !== project.id);
@@ -992,8 +1168,38 @@ async function handleApi(req, res, url) {
       updatedAt: now()
     };
     db.payments.push(payment);
+    pushActivity(db, { userId: user.id, action: 'payment.checkout_created', entityType: 'payment', entityId: payment.id, summary: `Checkout created for ${project.title}`, metadata: { project: projectSummary(project), paymentId: payment.id, amountUsd: payment.amountUsd }, req });
     await saveDb(db);
     json(res, 200, { project, payment, paymentInstructions: PAYMENT_INSTRUCTIONS });
+    return true;
+  }
+
+
+  params = routeMatch(pathname, '/api/projects/:id/credits/consume');
+  if (params && method === 'POST') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const body = await readBody(req);
+    const db = await loadDb();
+    const project = db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const credits = requirePositiveCredits(body.credits || body.amountCredits);
+    if (!credits) return fail(res, 400, 'bad_credits', 'A positive credits amount is required');
+    const wallet = getWallet(db, project.userId);
+    if (Number(wallet.balanceCredits || 0) < credits) return fail(res, 402, 'insufficient_credits', 'Not enough credits');
+    const { entry } = addCreditLedger(db, {
+      userId: project.userId,
+      projectId: project.id,
+      type: 'generation_used',
+      deltaCredits: -credits,
+      reason: String(body.reason || 'Project generation usage'),
+      metadata: { provider: body.provider || '', operation: body.operation || '', projectTitle: project.title },
+      req
+    });
+    project.updatedAt = now();
+    await saveDb(db);
+    json(res, 200, { wallet: publicWallet(getWallet(db, project.userId)), entry });
     return true;
   }
 
@@ -1031,6 +1237,7 @@ async function handleApi(req, res, url) {
     }
     const file = { id: fileId, projectId: project.id, userId: user.id, kind, fileName, mimeType, storageKey, externalUrl, createdAt: now() };
     db.files.push(file);
+    pushActivity(db, { userId: user.id, action: 'file.uploaded', entityType: 'file', entityId: file.id, summary: `Uploaded file: ${file.fileName}`, metadata: { projectId: project.id, kind, mimeType, storageKey }, req });
     await saveDb(db);
     json(res, 201, { file: { ...file, downloadUrl: `/api/files/${file.id}/download` } });
     return true;
@@ -1045,6 +1252,8 @@ async function handleApi(req, res, url) {
     if (!file) return notFound(res);
     const project = db.projects.find((p) => p.id === file.projectId);
     if (!project || !assertProjectOwnerOrAdmin(user, project)) return fail(res, 403, 'forbidden', 'Not your file');
+    pushActivity(db, { userId: user.id, action: 'file.downloaded', entityType: file.id?.startsWith('deliverable_') ? 'deliverable' : 'file', entityId: file.id, summary: `Downloaded file: ${file.fileName || file.title || file.id}`, metadata: { projectId: project.id }, req });
+    await saveDb(db);
     if (file.externalUrl) {
       res.writeHead(302, { location: file.externalUrl });
       res.end();
@@ -1084,6 +1293,48 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+
+  if (method === 'GET' && pathname === '/api/admin/activity') {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return true;
+    const db = await loadDb();
+    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') || 100)));
+    const activities = (db.activityLog || []).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
+    json(res, 200, { activities });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/admin/credits') {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return true;
+    const db = await loadDb();
+    json(res, 200, { wallets: (db.wallets || []).map(publicWallet), ledger: (db.creditLedger || []).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 500) });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/admin/users/:id/credits/adjust');
+  if (params && method === 'POST') {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return true;
+    const body = await readBody(req);
+    const db = await loadDb();
+    const target = db.users.find((u) => u.id === params.id);
+    if (!target) return notFound(res);
+    const credits = Number(body.credits || body.deltaCredits || 0);
+    if (!Number.isFinite(credits) || credits === 0) return fail(res, 400, 'bad_credits', 'Non-zero credits amount required');
+    const { wallet, entry } = addCreditLedger(db, {
+      userId: target.id,
+      type: 'admin_adjustment',
+      deltaCredits: Math.round(credits),
+      reason: String(body.reason || 'Admin credit adjustment'),
+      metadata: { adjustedByAdmin: admin.id },
+      req
+    });
+    await saveDb(db);
+    json(res, 200, { wallet: publicWallet(wallet), entry });
+    return true;
+  }
+
   params = routeMatch(pathname, '/api/admin/projects/:id');
   if (params && method === 'GET') {
     const admin = await requireAdmin(req, res);
@@ -1110,8 +1361,10 @@ async function handleApi(req, res, url) {
     const db = await loadDb();
     const project = db.projects.find((p) => p.id === params.id);
     if (!project) return notFound(res);
+    const previousStatus = project.status;
     project.status = status;
     project.updatedAt = now();
+    pushActivity(db, { userId: project.userId, action: 'project.status_changed', entityType: 'project', entityId: project.id, summary: `Project status changed: ${previousStatus} → ${status}`, metadata: { previousStatus, status, changedByAdmin: admin.id }, req });
     await saveDb(db);
     json(res, 200, { project });
     return true;
@@ -1128,10 +1381,35 @@ async function handleApi(req, res, url) {
     project.paymentStatus = 'paid';
     project.status = 'paid';
     project.updatedAt = now();
-    db.payments.push({
+    const paidPayment = {
       id: id('payment'), projectId: project.id, userId: project.userId, provider: 'manual_admin', amountUsd: project.priceUsd,
       status: 'paid', providerRef: String(body.providerRef || ''), createdAt: now(), updatedAt: now()
-    });
+    };
+    db.payments.push(paidPayment);
+    const creditsAdded = paymentCredits(project.priceUsd);
+    if (!project.creditsAwarded && creditsAdded > 0) {
+      addCreditLedger(db, {
+        userId: project.userId,
+        projectId: project.id,
+        paymentId: paidPayment.id,
+        type: 'purchase',
+        deltaCredits: creditsAdded,
+        reason: `Paid ${project.packageKey || 'project'} package`,
+        metadata: { amountUsd: project.priceUsd, packageKey: project.packageKey, projectTitle: project.title },
+        req
+      });
+      project.creditsAwarded = true;
+      project.creditsAdded = creditsAdded;
+    }
+    db.subscriptions ||= [];
+    if (project.packageKey) {
+      db.subscriptions.push({
+        id: id('subscription'), userId: project.userId, projectId: project.id, packageKey: project.packageKey,
+        amountUsd: project.priceUsd, status: 'active', source: 'manual_admin_payment', paymentId: paidPayment.id,
+        createdAt: now(), updatedAt: now()
+      });
+    }
+    pushActivity(db, { userId: project.userId, action: 'payment.paid', entityType: 'payment', entityId: paidPayment.id, summary: `Payment confirmed for ${project.title}`, metadata: { project: projectSummary(project), amountUsd: project.priceUsd, creditsAdded }, req });
     await saveDb(db);
     json(res, 200, { project });
     return true;
@@ -1162,6 +1440,7 @@ async function handleApi(req, res, url) {
       fileName, mimeType, storageKey, externalUrl, createdAt: now()
     };
     db.deliverables.push(deliverable);
+    pushActivity(db, { userId: project.userId, action: 'deliverable.created', entityType: 'deliverable', entityId: deliverable.id, summary: `Deliverable added: ${deliverable.title}`, metadata: { projectId: project.id, type, fileName }, req });
     project.status = 'delivered';
     project.updatedAt = now();
     await saveDb(db);
