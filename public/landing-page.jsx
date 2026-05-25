@@ -3,6 +3,22 @@
 
 const { useState, useEffect, useRef } = React;
 
+function cmGoBilling() {
+  try {
+    if (typeof window !== "undefined") {
+      if (window.__cmNav) {
+        window.__cmNav("billing");
+      } else {
+        window.location.hash = "#/billing";
+      }
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+  } catch (e) {
+    window.location.hash = "#/billing";
+  }
+}
+
+
 const PLANS = [
   { key: "starter", name: "اشتراك ابتدائي", price: 150,  credits: 1500,  badge: "للبداية",
     features: ["1,500 كريديت/شهر", "حتى 30 ثانية للفيديو", "تصدير 1080p", "دعم بريدي"] },
@@ -422,7 +438,7 @@ function PlanCard({ p, plan, onSubscribe }) {
   return (
     <div
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-      onClick={onSubscribe}
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); (onSubscribe || cmGoBilling)(); }}
       style={{
         position: "relative", padding: 24, background: featured ? p.bg2 : p.bg1,
         border: `1px solid ${hover || featured ? p.accent : p.border}`,
@@ -471,7 +487,7 @@ function PlanCard({ p, plan, onSubscribe }) {
       </div>
 
       <div style={{ marginTop: 22 }}>
-        <CrunchBtn p={p} label={featured ? "اذهب للفوترة" : "اشحن الرصيد"} solid={featured} small full />
+        <CrunchBtn p={p} label={featured ? "اذهب للفوترة" : "اشحن الرصيد"} solid={featured} small full onClick={(e) => { e && e.stopPropagation && e.stopPropagation(); (onSubscribe || cmGoBilling)(); }} />
       </div>
 
       <div style={{
@@ -546,7 +562,7 @@ function Payg({ p, onPay }) {
               ↳ رصيد واحد لكل أدوات المنصة
             </div>
             <div style={{ marginTop: 14 }}>
-              <CrunchBtn p={p} label="اذهب للفوترة" solid icon="▶" disabled={!valid} onClick={() => valid && onPay(amount)} full />
+              <CrunchBtn p={p} label="اذهب للفوترة" solid icon="▶" disabled={!valid} onClick={(e) => { e && e.preventDefault && e.preventDefault(); if (valid) (onPay || cmGoBilling)(amount); }} full />
             </div>
           </div>
         </div>
@@ -676,12 +692,8 @@ function LandingPage() {
 
   function goBilling() {
     setNavigating(true);
-    setTimeout(() => setNavigating(false), 350);
-    if (window.__cmNav) {
-      setTimeout(() => window.__cmNav("billing"), 120);
-    } else {
-      window.location.hash = "#/billing";
-    }
+    setTimeout(() => setNavigating(false), 250);
+    cmGoBilling();
   }
 
   function go() {
