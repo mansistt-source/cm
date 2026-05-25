@@ -471,7 +471,7 @@ function PlanCard({ p, plan, onSubscribe }) {
       </div>
 
       <div style={{ marginTop: 22 }}>
-        <CrunchBtn p={p} label={featured ? "ابدأ الآن" : "اشترك"} solid={featured} small full />
+        <CrunchBtn p={p} label={featured ? "اذهب للفوترة" : "اشحن الرصيد"} solid={featured} small full />
       </div>
 
       <div style={{
@@ -486,13 +486,13 @@ function PlanCard({ p, plan, onSubscribe }) {
 // ---------- PAYG ----------
 function Payg({ p, onPay }) {
   const [amount, setAmount] = useState(0);
-  const credits = amount > 0 ? Math.floor(amount / 0.15) : 0;
-  const valid = amount >= 1 && amount <= 5000;
+  const credits = amount > 0 ? Math.floor(amount * 10) : 0;
+  const valid = amount >= 30 && amount <= 1500;
   const over = amount > 5000;
 
   return (
     <section id="payg" style={{ padding: "100px 40px", position: "relative", borderBottom: `1px solid ${p.border}` }}>
-      <SectionHead p={p} code="// PAY_AS_YOU_GO" title="ادفع المرن" sub="بدون اشتراك · $0.15 لكل كريديت · حتى $5,000 للمعاملة" />
+      <SectionHead p={p} code="// PAY_AS_YOU_GO" title="اشحن الكريدتس" sub="رصيد واحد لكل خدمات المنصة · 1 دولار = 10 كريدت · أقل شحن $30" />
 
       <div style={{ maxWidth: 1440, margin: "0 auto", padding: 28, background: p.bg1, border: `1px solid ${p.accent}`, position: "relative", overflow: "hidden" }}>
         {/* aurora bg */}
@@ -508,7 +508,7 @@ function Payg({ p, onPay }) {
               ادفع ما تستخدمه
             </div>
             <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: p.dim, letterSpacing: ".15em", marginTop: 8 }}>
-              $0.15 / CREDIT · NO_SUBSCRIPTION · INSTANT
+              $1 = 10 CREDITS · MIN $30 · INSTANT
             </div>
           </div>
 
@@ -523,7 +523,7 @@ function Payg({ p, onPay }) {
             )}
             {/* presets */}
             <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
-              {[10, 50, 100, 500].map(v => (
+              {[30, 50, 100, 300, 800, 1500].map(v => (
                 <button key={v} onClick={() => setAmount(v)} style={{
                   flex: 1, padding: "6px 0", background: amount === v ? `${p.accent}22` : "transparent",
                   color: amount === v ? p.accent : p.dim,
@@ -543,10 +543,10 @@ function Payg({ p, onPay }) {
               <span style={{ fontSize: 14, color: p.dim, marginRight: 8, fontFamily: "'Space Mono', monospace" }}>CRED</span>
             </div>
             <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.dim, letterSpacing: ".15em", marginTop: 6 }}>
-              ↳ ≈ {Math.floor(credits / 45) || 0} VIDEO_30S
+              ↳ رصيد واحد لكل أدوات المنصة
             </div>
             <div style={{ marginTop: 14 }}>
-              <CrunchBtn p={p} label="ادفع الآن" solid icon="▶" disabled={!valid} onClick={() => valid && onPay(amount)} full />
+              <CrunchBtn p={p} label="اذهب للفوترة" solid icon="▶" disabled={!valid} onClick={() => valid && onPay(amount)} full />
             </div>
           </div>
         </div>
@@ -674,6 +674,16 @@ function LandingPage() {
   const p = window.PALETTES.crimson;
   const [navigating, setNavigating] = useState(false);
 
+  function goBilling() {
+    setNavigating(true);
+    setTimeout(() => setNavigating(false), 350);
+    if (window.__cmNav) {
+      setTimeout(() => window.__cmNav("billing"), 120);
+    } else {
+      window.location.hash = "#/billing";
+    }
+  }
+
   function go() {
     setNavigating(true);
     setTimeout(() => setNavigating(false), 600);
@@ -689,8 +699,8 @@ function LandingPage() {
       <Hero p={p} onStart={go} onDemo={go} />
       <HowItWorks p={p} />
       <StyleReel p={p} />
-      <Plans p={p} onSubscribe={go} />
-      <Payg p={p} onPay={() => go()} />
+      <Plans p={p} onSubscribe={goBilling} />
+      <Payg p={p} onPay={goBilling} />
       <Cta p={p} onStart={go} />
       <Footer p={p} />
     </div>
