@@ -20,6 +20,11 @@ const PAYMENT_INSTRUCTIONS = process.env.PAYMENT_INSTRUCTIONS || 'Payment link i
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '';
 const MAIL_FROM = process.env.MAIL_FROM || 'Content Machine <security@content-machine.local>';
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
+const MAILJET_API_KEY = process.env.MAILJET_API_KEY || '';
+const MAILJET_SECRET_KEY = process.env.MAILJET_SECRET_KEY || '';
+const EMAIL_PROVIDER = String(process.env.EMAIL_PROVIDER || '').trim().toLowerCase();
+const ALLOW_DEV_2FA_CODE = String(process.env.ALLOW_DEV_2FA_CODE || '').trim().toLowerCase() === 'true';
 const TWOFA_CODE_TTL_MS = 1000 * 60 * 10;
 const COOKIE_SECURE = process.env.NODE_ENV === 'production' ? '; Secure' : '';
 
@@ -271,23 +276,71 @@ function hashSecurityCode(code) {
   return crypto.createHmac('sha256', JWT_SECRET).update(String(code || '').trim()).digest('hex');
 }
 
+function senderFromMailFrom() {
+  const raw = String(MAIL_FROM || '').trim();
+  const match = raw.match(/^(.*?)\s*<([^>]+)>$/);
+  if (match) return { name: match[1].trim() || 'Content Machine', email: match[2].trim() };
+  return { name: 'Content Machine', email: raw || 'security@content-machine.local' };
+}
+
+function activeEmailProvider() {
+  if (EMAIL_PROVIDER) return EMAIL_PROVIDER;
+  if (RESEND_API_KEY) return 'resend';
+  if (BREVO_API_KEY) return 'brevo';
+  if (MAILJET_API_KEY && MAILJET_SECRET_KEY) return 'mailjet';
+  return ALLOW_DEV_2FA_CODE ? 'console' : 'none';
+}
+
 async function deliverSecurityEmail({ to, code, purpose }) {
   const subject = purpose === 'login' ? 'Content Machine login code' : purpose === 'disable_2fa' ? 'Content Machine disable 2FA code' : 'Content Machine 2FA activation code';
-  const text = `Your Content Machine security code is: ${code}\nThis code expires in 10 minutes.`;
-  if (!RESEND_API_KEY) {
+  const text = `Your Content Machine security code is: ${code}\nThis code expires in 10 minutes.\n\nIf you did not request this code, ignore this email.`;
+  const sender = senderFromMailFrom();
+  const provider = activeEmailProvider();
+
+  if (provider === 'none') {
+    throw new Error('Email provider is not configured. Set EMAIL_PROVIDER=resend and RESEND_API_KEY, or explicitly set ALLOW_DEV_2FA_CODE=true for local testing only.');
+  }
+
+  if (provider === 'console') {
     console.log(`[SECURITY_EMAIL_DEV] to=${to} purpose=${purpose} code=${code}`);
     return { sent: false, provider: 'console' };
   }
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${RESEND_API_KEY}` },
-    body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, text })
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`Email provider failed: ${body || response.status}`);
+
+  if (provider === 'resend') {
+    if (!RESEND_API_KEY) throw new Error('RESEND_API_KEY is missing');
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${RESEND_API_KEY}` },
+      body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, text })
+    });
+    if (!response.ok) throw new Error(`Resend failed: ${await response.text().catch(() => response.status)}`);
+    return { sent: true, provider: 'resend' };
   }
-  return { sent: true, provider: 'resend' };
+
+  if (provider === 'brevo') {
+    if (!BREVO_API_KEY) throw new Error('BREVO_API_KEY is missing');
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'api-key': BREVO_API_KEY },
+      body: JSON.stringify({ sender, to: [{ email: to }], subject, textContent: text })
+    });
+    if (!response.ok) throw new Error(`Brevo failed: ${await response.text().catch(() => response.status)}`);
+    return { sent: true, provider: 'brevo' };
+  }
+
+  if (provider === 'mailjet') {
+    if (!MAILJET_API_KEY || !MAILJET_SECRET_KEY) throw new Error('MAILJET_API_KEY or MAILJET_SECRET_KEY is missing');
+    const auth = Buffer.from(`${MAILJET_API_KEY}:${MAILJET_SECRET_KEY}`).toString('base64');
+    const response = await fetch('https://api.mailjet.com/v3.1/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Basic ${auth}` },
+      body: JSON.stringify({ Messages: [{ From: sender, To: [{ Email: to }], Subject: subject, TextPart: text }] })
+    });
+    if (!response.ok) throw new Error(`Mailjet failed: ${await response.text().catch(() => response.status)}`);
+    return { sent: true, provider: 'mailjet' };
+  }
+
+  throw new Error(`Unsupported EMAIL_PROVIDER: ${provider}`);
 }
 
 async function createEmailCodeChallenge(db, user, purpose) {
@@ -305,7 +358,7 @@ async function createEmailCodeChallenge(db, user, purpose) {
   };
   db.twoFactorCodes.push(record);
   const delivery = await deliverSecurityEmail({ to: user.email, code, purpose });
-  return { record, delivery, devCode: RESEND_API_KEY ? undefined : code };
+  return { record, delivery, devCode: ALLOW_DEV_2FA_CODE && activeEmailProvider() === 'console' ? code : undefined };
 }
 
 function verifyEmailSecurityCode(db, user, purpose, code) {
@@ -642,6 +695,23 @@ async function handleApi(req, res, url) {
     const user = await requireUser(req, res);
     if (!user) return true;
     json(res, 200, { user: publicUser(user) });
+    return true;
+  }
+
+  if (method === 'PATCH' && pathname === '/api/auth/profile') {
+    const user = await requireUser(req, res);
+    if (!user) return true;
+    const body = await readBody(req);
+    const name = String(body.name || '').trim();
+    if (!name || name.length < 2) return fail(res, 400, 'name_required', 'Name must be at least 2 characters');
+    if (name.length > 60) return fail(res, 400, 'name_too_long', 'Name is too long');
+    const db = await loadDb();
+    const target = db.users.find((u) => u.id === user.id);
+    if (!target) return fail(res, 404, 'user_not_found', 'User not found');
+    target.name = name;
+    target.updatedAt = now();
+    await saveDb(db);
+    json(res, 200, { ok: true, user: publicUser(target) });
     return true;
   }
 

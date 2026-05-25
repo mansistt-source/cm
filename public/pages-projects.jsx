@@ -40,7 +40,7 @@ function LibraryPage({ p, navigate, credits = 0 }) {
     setLoading(true); setErr("");
     try {
       const me = await projApi("/api/auth/me");
-      if (me.user) { setUser(me.user); localStorage.setItem("cm_user", JSON.stringify(me.user)); }
+      if (me.user) { setUser(me.user); setNameDraft(me.user.name || ""); localStorage.setItem("cm_user", JSON.stringify(me.user)); }
       const [list, packs] = await Promise.all([projApi("/api/projects"), fetch("/api/packages").then(r => r.json())]);
       setProjects(list.projects || []);
       setPackages(packs.packages || []);
@@ -212,6 +212,7 @@ function ProjectDetailPage({ p, navigate, projectId }) {
 
 function SettingsPage({ p, navigate, credits = 0 }) {
   const [user, setUser] = React.useState(projCurrentUser());
+  const [nameDraft, setNameDraft] = React.useState((projCurrentUser().name || ""));
   const [sessions, setSessions] = React.useState([]);
   const [err, setErr] = React.useState("");
   const [msg, setMsg] = React.useState("");
@@ -233,6 +234,17 @@ function SettingsPage({ p, navigate, credits = 0 }) {
 
   function confirmLogout() {
     setConfirmAction({ title:"تأكيد تسجيل الخروج", message:"هل أنت متأكد من تسجيل الخروج؟", confirmLabel:"تسجيل خروج", danger:true, onConfirm:() => projLogout(navigate) });
+  }
+
+  async function changeName() {
+    setErr(""); setMsg("");
+    const clean = String(nameDraft || "").trim();
+    if (!clean || clean.length < 2) { setErr("اكتب اسم لا يقل عن حرفين"); return; }
+    try {
+      const d = await projApi("/api/auth/profile", { method:"PATCH", body:JSON.stringify({ name: clean }) });
+      if (d.user) { setUser(d.user); setNameDraft(d.user.name || ""); localStorage.setItem("cm_user", JSON.stringify(d.user)); window.dispatchEvent(new Event("cm-auth-changed")); }
+      setMsg("تم تحديث الاسم");
+    } catch(e) { setErr(e.message || "فشل تحديث الاسم"); }
   }
 
   async function changePassword() {
@@ -327,12 +339,14 @@ function SettingsPage({ p, navigate, credits = 0 }) {
 
       <Panel p={p} padding={24} style={{ marginBottom:16 }}>
         <Tag p={p}>ACCOUNT</Tag>
-        <div style={{ marginTop:14, display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12 }}>
-          <MiniConnected p={p} l="NAME" v={user.name || "غير محدد"} />
+        <div style={{ marginTop:14, display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
           <MiniConnected p={p} l="EMAIL" v={user.email || ""} mono />
           <MiniConnected p={p} l="ROLE" v={user.role || "user"} accent />
         </div>
-        <div style={{ marginTop:18 }}><CrunchBtn p={p} label="تسجيل خروج" danger icon="!" onClick={confirmLogout} /></div>
+        <div style={{ marginTop:16, display:"grid", gridTemplateColumns:"1fr auto", gap:10, alignItems:"end" }}>
+          <TacticalInput p={p} label="تغيير الاسم" value={nameDraft} onChange={setNameDraft} placeholder="اسم الحساب" />
+          <CrunchBtn p={p} label="تأكيد" solid onClick={changeName} />
+        </div>
       </Panel>
 
       <Panel p={p} padding={24} style={{ marginBottom:16 }}>
@@ -370,6 +384,16 @@ function SettingsPage({ p, navigate, credits = 0 }) {
             </div>
             <CrunchBtn p={p} label={s.current ? "إنهاء الحالية" : "إنهاء"} small danger onClick={() => revokeSession(s)} />
           </div>)}
+        </div>
+      </Panel>
+
+      <Panel p={p} padding={24} style={{ marginTop:16 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:12, alignItems:"center" }}>
+          <div>
+            <Tag p={p}>LOGOUT</Tag>
+            <div style={{ marginTop:8, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13 }}>الخروج من الحساب الحالي فقط.</div>
+          </div>
+          <CrunchBtn p={p} label="تسجيل خروج" danger icon="!" onClick={confirmLogout} />
         </div>
       </Panel>
     </div>
@@ -433,8 +457,11 @@ function TwoFactorActivationPage({ p, navigate, credits = 0 }) {
 
   return <PageFrame p={p} density={0.35}>
     <AuthedNav p={p} current="settings" navigate={navigate} credits={credits} user={user} onLogout={() => projLogout(navigate)} />
-    <div style={{ padding:"32px", maxWidth:820, margin:"0 auto" }}>
-      <SectionHead p={p} code="// EMAIL_2FA" title="المصادقة الثنائية" sub="تفعيل المصادقة بكود أمان يصل إلى بريد الحساب" right={<CrunchBtn p={p} label="رجوع للإعدادات" onClick={() => navigate("settings")} />} />
+    <div style={{ padding:"32px", maxWidth:860, margin:"0 auto" }}>
+      <div style={{ display:"flex", justifyContent:"flex-start", marginBottom:18 }}>
+        <CrunchBtn p={p} label="← رجوع للإعدادات" onClick={() => navigate("settings")} />
+      </div>
+      <SectionHead p={p} code="// EMAIL_2FA" title="المصادقة الثنائية" sub="تفعيل المصادقة بكود أمان يصل إلى بريد الحساب" />
       {err && <div style={{ marginBottom:14 }}><Toast p={p} type="error">{err}</Toast></div>}
       {msg && <div style={{ marginBottom:14 }}><Toast p={p} type="success">{msg}</Toast></div>}
       <Panel p={p} padding={24}>
@@ -454,6 +481,9 @@ function TwoFactorActivationPage({ p, navigate, credits = 0 }) {
           <CrunchBtn p={p} label="تعطيل المصادقة" danger onClick={disable} />
         </div>}
       </Panel>
+      <div style={{ marginTop:14 }}>
+        <CrunchBtn p={p} label="رجوع للإعدادات" onClick={() => navigate("settings")} />
+      </div>
     </div>
   </PageFrame>;
 }
