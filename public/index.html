@@ -129,7 +129,20 @@ function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const common = { p, navigate };
+  function readStoredUser() {
+    try {
+      const raw = localStorage.getItem("cm_user");
+      if (!raw) return { name: "Operator", email: "operator@content.machine", initial: "O" };
+      const parsed = JSON.parse(raw);
+      const safeName = String(parsed.name || parsed.email || "Operator").trim() || "Operator";
+      return { ...parsed, name: safeName, initial: safeName[0] || "O" };
+    } catch (_) {
+      return { name: "Operator", email: "operator@content.machine", initial: "O" };
+    }
+  }
+
+  const user = readStoredUser();
+  const common = { p, navigate, user };
   let view;
 
   switch (route) {

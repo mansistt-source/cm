@@ -2,8 +2,32 @@
 
 const { useState: _u, useEffect: _e, useRef: _r } = React;
 
+function cmStoredUser() {
+  try {
+    const raw = localStorage.getItem("cm_user");
+    if (!raw) return { name: "Operator", email: "operator@content.machine" };
+    const parsed = JSON.parse(raw);
+    const safeName = String(parsed.name || parsed.email || "Operator").trim() || "Operator";
+    return {
+      ...parsed,
+      name: safeName,
+      email: parsed.email || "",
+      initial: safeName[0] || "O",
+    };
+  } catch (_) {
+    return { name: "Operator", email: "operator@content.machine", initial: "O" };
+  }
+}
+
+function cmLogout(navigate, onLogout) {
+  localStorage.removeItem("cm_token");
+  localStorage.removeItem("cm_user");
+  if (typeof onLogout === "function") return onLogout();
+  if (typeof navigate === "function") return navigate("auth");
+}
+
 // ---- AuthedNav: top bar shown on all logged-in pages
-function AuthedNav({ p, current, navigate, credits = 4820, user = { name: "أحمد", email: "ahmed@op.r74" }, onLogout }) {
+function AuthedNav({ p, current, navigate, credits = 4820, user = cmStoredUser(), onLogout }) {
   const tabs = [
     { id: "dashboard",   l: "الرئيسية",     icon: "◇" },
     { id: "service-agent", l: "وكيل الخدمة", icon: "✦", hot: true },
@@ -69,8 +93,8 @@ function AuthedNav({ p, current, navigate, credits = 4820, user = { name: "أح�
           display: "flex", alignItems: "center", justifyContent: "center",
           fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: p.bg0, letterSpacing: ".05em",
           cursor: "pointer",
-        }} onClick={onLogout}>
-          {user.name[0]}
+        }} onClick={() => cmLogout(navigate, onLogout)}>
+          {(user.initial || user.name || "O")[0]}
         </div>
       </div>
     </nav>
