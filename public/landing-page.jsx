@@ -21,13 +21,13 @@ function cmGoBilling() {
 
 const PLANS = [
   { key: "starter", name: "اشتراك ابتدائي", price: 150,  credits: 1500,  badge: "للبداية",
-    features: ["1,500 كريديت/شهر", "حتى 30 ثانية للفيديو", "تصدير 1080p", "دعم بريدي"] },
-  { key: "growth",  name: "اشتراك مُعزز",    price: 300,  credits: 3300,  badge: "للنمو",
-    features: ["3,300 كريديت/شهر", "حتى 60 ثانية", "تصدير 4K", "أولوية في الطابور"] },
-  { key: "pro",     name: "اشتراك احترافي",  price: 800,  credits: 9600,  badge: "يزيد الوفرة", featured: true,
-    features: ["9,600 كريديت/شهر", "حتى 5 دقائق", "تصدير 4K · HDR", "تخصيص الستايل", "دعم مباشر"] },
-  { key: "agency",  name: "أقصى اشتراك",     price: 1500, credits: 19500, badge: "للوكالات",
-    features: ["19,500 كريديت/شهر", "بلا حدود زمنية", "API كامل", "حسابات فرعية", "مدير نجاح"] },
+    features: ["1,500 كريديت", "حتى 30 ثانية للفيديو", "تصدير 1080p", "دعم بريدي"] },
+  { key: "growth",  name: "اشتراك مُعزز",    price: 300,  credits: 3000,  badge: "للنمو",
+    features: ["3,000 كريديت", "حتى 60 ثانية", "تصدير 4K", "أولوية في الطابور"] },
+  { key: "pro",     name: "اشتراك احترافي",  price: 800,  credits: 8000,  badge: "يزيد الوفرة", featured: true,
+    features: ["8,000 كريديت", "حتى 5 دقائق", "تصدير 4K · HDR", "تخصيص الستايل", "دعم مباشر"] },
+  { key: "agency",  name: "أقصى اشتراك",     price: 1500, credits: 15000, badge: "للوكالات",
+    features: ["15,000 كريديت", "بلا حدود زمنية", "API كامل", "حسابات فرعية", "مدير نجاح"] },
 ];
 
 const STEPS = [
@@ -422,7 +422,7 @@ function StyleReel({ p }) {
 // ---------- plans ----------
 function Plans({ p, onSubscribe }) {
   return (
-    <section id="plans" style={{ padding: "100px 40px", position: "relative", borderBottom: `1px solid ${p.border}` }}>
+    <section id="plans" data-billing-area="true" style={{ padding: "100px 40px", position: "relative", borderBottom: `1px solid ${p.border}` }}>
       <SectionHead p={p} code="// SUBSCRIPTION_TIERS_04" title="خطط الكريديت" sub="الكلفة الفعلية بالكريديت · بدون رسوم خفية" />
 
       <div style={{ maxWidth: 1440, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
@@ -507,7 +507,7 @@ function Payg({ p, onPay }) {
   const over = amount > 5000;
 
   return (
-    <section id="payg" style={{ padding: "100px 40px", position: "relative", borderBottom: `1px solid ${p.border}` }}>
+    <section id="payg" data-billing-area="true" style={{ padding: "100px 40px", position: "relative", borderBottom: `1px solid ${p.border}` }}>
       <SectionHead p={p} code="// PAY_AS_YOU_GO" title="اشحن الكريدتس" sub="رصيد واحد لكل خدمات المنصة · 1 دولار = 10 كريدت · أقل شحن $30" />
 
       <div style={{ maxWidth: 1440, margin: "0 auto", padding: 28, background: p.bg1, border: `1px solid ${p.accent}`, position: "relative", overflow: "hidden" }}>

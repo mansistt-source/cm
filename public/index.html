@@ -263,5 +263,31 @@ function App() {
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
+
+<script>
+(function () {
+  function cmRouteToBilling() {
+    try {
+      if (window.location.hash !== '#/billing') window.location.hash = '#/billing';
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    } catch (_) { window.location.href = '/#/billing'; }
+  }
+  window.cmGoBilling = window.cmGoBilling || cmRouteToBilling;
+  document.addEventListener('click', function (event) {
+    var node = event.target && event.target.closest && event.target.closest('button,a,[role="button"]');
+    if (!node) return;
+    if ((window.location.hash || '').includes('/billing')) return;
+    var text = (node.innerText || node.textContent || '').trim().toLowerCase();
+    var isFinancialText = /(paypal|pay|billing|top\s*up|upgrade|subscribe|اشتراك|ترقية|تجديد|جدد|دفع|ادفع|شراء|رصيد|كريدت|كريديت|خطة)/i.test(text);
+    var inPricingArea = !!(node.closest('#plans,#payg,[data-billing-area],[data-pricing-area]'));
+    if (isFinancialText && (inPricingArea || /(paypal|اشتراك|ترقية|تجديد|جدد|دفع|ادفع|شراء|رصيد|كريدت|كريديت)/i.test(text))) {
+      event.preventDefault();
+      event.stopPropagation();
+      cmRouteToBilling();
+    }
+  }, true);
+})();
+</script>
+
 </body>
 </html>

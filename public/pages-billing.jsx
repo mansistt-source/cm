@@ -122,7 +122,7 @@ function BillingPage({ p, navigate }) {
   return <PageFrame p={p} density={0.35}>
     {nav}
     <div style={{ padding:"32px", maxWidth:1280, margin:"0 auto" }}>
-      <SectionHead p={p} code="// WALLET_BILLING" title="الفوترة والكريدتس" sub="اشحن كريدتس المنصة. 1 دولار = 10 كريدت. أقل شحن 30 دولار." right={<CrunchBtn p={p} label="تحديث" onClick={load} />} />
+      <SectionHead p={p} code="// WALLET_BILLING" title="الفوترة · شحن الكريدتس" sub="اشحن رصيدك بالكريدتس. 1 دولار = 10 كريدت. أقل شحن 30 دولار. كل خدمات المنصة تُحاسب من هذا الرصيد." right={<CrunchBtn p={p} label="تحديث" onClick={load} />} />
       {err && <div style={{ marginBottom:12 }}><Toast p={p} type="error">{err}</Toast></div>}
       {msg && <div style={{ marginBottom:12 }}><Toast p={p} type="success">{msg}</Toast></div>}
 
@@ -148,9 +148,10 @@ function BillingPage({ p, navigate }) {
 
         <Panel p={p} padding={26}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, marginBottom:14 }}>
-            <Tag p={p}>TOP_UP_CREDITS</Tag>
-            <div style={{ fontFamily:"'Space Mono', monospace", fontSize:10, color:p.dim, letterSpacing:".12em" }}>MIN $30 · PAYPAL</div>
+            <Tag p={p} color={p.accent}>TOP_UP_CREDITS</Tag>
+            <div style={{ fontFamily:"'Space Mono', monospace", fontSize:10, color:p.dim, letterSpacing:".12em" }}>اختر مبلغ الشحن · MIN $30 · PAYPAL</div>
           </div>
+          <div style={{ marginBottom:14, padding:"12px 14px", background:`${p.accent}10`, border:`1px solid ${p.accent}`, color:p.fg, fontFamily:"\'Space Mono\', monospace", fontSize:11, letterSpacing:".1em", display:"flex", justifyContent:"space-between", gap:12 }}><span>1 USD = 10 CREDITS</span><span>MIN TOP-UP = $30</span></div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:12 }}>
             {loading && <div style={{ gridColumn:"1/-1", color:p.dim }}>جاري تحميل خطط الشحن...</div>}
             {!loading && plans.map((plan) => <TopupCard key={plan.key} p={p} plan={plan} busy={busyPlan === plan.key} authed={authed} onBuy={() => buy(plan)} />)}

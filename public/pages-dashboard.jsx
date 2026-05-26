@@ -146,7 +146,8 @@ function RecentListConnected({ p, navigate, projects }) {
   </div>)}</div>;
 }
 
-function DashBilling({ p }) {
+function DashBilling({ p, navigate }) {
+  const goBilling = () => { if (navigate) navigate("billing"); else window.location.hash = "#/billing"; };
   const [amount, setAmount] = React.useState(0);
   const credits = amount > 0 ? Math.floor(amount / 0.0792) : 0;
   const valid = amount >= 5 && amount <= 5000;
@@ -175,8 +176,8 @@ function DashBilling({ p }) {
             <StatusBar p={p} label="" value={70} color={p.accent} />
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <CrunchBtn p={p} label="ترقية الخطة" solid icon="↑" full />
-            <CrunchBtn p={p} label="إيقاف التجديد" small full />
+            <CrunchBtn p={p} label="ترقية الخطة" solid icon="↑" full onClick={goBilling} />
+            <CrunchBtn p={p} label="إيقاف التجديد" small full onClick={goBilling} />
           </div>
         </div>
       </Panel>
@@ -184,7 +185,7 @@ function DashBilling({ p }) {
       <SectionHead p={p} code="// TIERS_AVAILABLE" title="خطط الكريديت" />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 18 }}>
-        {PLANS_DASH.map(plan => <BillingPlan key={plan.key} p={p} plan={plan} active={plan.key === "growth"} />)}
+        {PLANS_DASH.map(plan => <BillingPlan key={plan.key} p={p} plan={plan} active={plan.key === "growth"} onBilling={goBilling} />)}
       </div>
 
       {/* PAYG */}
@@ -224,7 +225,7 @@ function DashBilling({ p }) {
               <span style={{ fontSize: 11, color: p.dim, marginRight: 6, fontFamily: "'Space Mono', monospace" }}>CRED</span>
             </div>
             <div style={{ marginTop: 10 }}>
-              <CrunchBtn p={p} label="ادفع الآن" solid icon="▶" disabled={!valid} full />
+              <CrunchBtn p={p} label="ادفع الآن" solid icon="▶" disabled={!valid} full onClick={goBilling} />
             </div>
           </div>
         </div>
@@ -256,7 +257,7 @@ function DashBilling({ p }) {
   );
 }
 
-function BillingPlan({ p, plan, active }) {
+function BillingPlan({ p, plan, active, onBilling }) {
   return (
     <div style={{
       position: "relative", padding: 20, background: plan.featured ? p.bg2 : p.bg1,
@@ -286,7 +287,7 @@ function BillingPlan({ p, plan, active }) {
         {plan.credits.toLocaleString()} CRED
       </div>
       <div style={{ marginTop: 14 }}>
-        <CrunchBtn p={p} label={active ? "خطتك الحالية" : "اختر"} solid={plan.featured && !active} small full disabled={active} />
+        <CrunchBtn p={p} label={active ? "خطتك الحالية" : "اختر"} solid={plan.featured && !active} small full disabled={active} onClick={onBilling} />
       </div>
     </div>
   );
