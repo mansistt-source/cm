@@ -2447,6 +2447,419 @@ function opsRunActualCreditsDraft(run, plan) {
 
 // --- END STEP 22 ---
 
+
+
+// --- STEP 26: FULL OPERATIONAL MIND ATTACHMENTS + SKILL RAG (no paid API calls) ---
+const OPS_ATTACHMENT_VERSION = 'ops_attachment_v1_no_paid_calls';
+
+const OPS_MODEL_LANES = {
+  director: {
+    purpose: 'Highest-level orchestration, workflow decisions, cross-agent synthesis.',
+    defaultProvider: 'anthropic_or_openai_later',
+    executionMode: 'paid_model_call_later',
+    dryRunBehavior: 'return structured management decision without provider call'
+  },
+  router: {
+    purpose: 'Cheap classification, routing, simple eligibility decisions.',
+    defaultProvider: 'gemini_flash_or_small_model_later',
+    executionMode: 'cheap_model_call_or_deterministic_later',
+    dryRunBehavior: 'keyword and registry based routing'
+  },
+  long_context: {
+    purpose: 'Large context, research packets, project memory, reference digestion.',
+    defaultProvider: 'gemini_long_context_later',
+    executionMode: 'paid_model_call_later',
+    dryRunBehavior: 'registry and stored project data only'
+  },
+  creative: {
+    purpose: 'Scripts, storyboards, hooks, prompts, campaign maps, creative planning.',
+    defaultProvider: 'claude_or_openai_creative_later',
+    executionMode: 'paid_model_call_later',
+    dryRunBehavior: 'structured placeholder artifact based on agent role'
+  },
+  multimodal: {
+    purpose: 'Asset inspection, visual consistency, output quality checks.',
+    defaultProvider: 'gemini_multimodal_later',
+    executionMode: 'paid_model_call_later',
+    dryRunBehavior: 'metadata-only placeholder until real visual model is connected'
+  },
+  deterministic: {
+    purpose: 'Wallet checks, credit reservation, task graph, status changes, exact math.',
+    defaultProvider: 'server_code',
+    executionMode: 'no_ai_cost',
+    dryRunBehavior: 'server code only'
+  },
+  higgsfield_execution: {
+    purpose: 'Image, video, voice, avatar, editor and production execution.',
+    defaultProvider: 'higgsfield_later',
+    executionMode: 'payment_gated_execution_later',
+    dryRunBehavior: 'payload validation only; never call provider'
+  }
+};
+
+const OPS_SKILL_KNOWLEDGE_BASE = [
+  {
+    id: 'readProject',
+    title: 'Read Project Context',
+    category: 'context',
+    description: 'Reads project title, description, service configuration, status, brief, package, style, duration, and owner.',
+    whenToUse: ['every workflow start', 'any agent needing project truth', 'before creating plans'],
+    avoidWhen: ['never avoid if project state is needed'],
+    requiredInputs: ['projectId', 'userId'],
+    outputUse: 'Grounds all downstream agents in stored project truth.',
+    keywords: ['project','brief','context','state','configuration','truth']
+  },
+  {
+    id: 'readAssets',
+    title: 'Read Uploaded Assets',
+    category: 'assets',
+    description: 'Reads uploaded files and asset metadata for characters, products, tools, cars, references, and deliverables.',
+    whenToUse: ['film generation with mentions', 'marketing with product assets', 'avatar workflow', 'QA against references'],
+    avoidWhen: ['no uploaded files and no mentions'],
+    requiredInputs: ['projectId'],
+    outputUse: 'Gives asset handles and metadata to mention resolver and creative agents.',
+    keywords: ['asset','upload','character','product','tool','car','reference','file','image']
+  },
+  {
+    id: 'resolveMentions',
+    title: 'Resolve @ Mentions',
+    category: 'assets',
+    description: 'Maps @char1, @tool1, @product1, @car1 and @account1 references to stored project assets or reference accounts.',
+    whenToUse: ['prompt contains @', 'storyboard references uploaded items', 'UGC script references a product'],
+    avoidWhen: ['prompt has no mentions and no required assets'],
+    requiredInputs: ['prompt','projectAssets','referenceAccounts'],
+    outputUse: 'Prevents hallucinated assets and keeps prompts linked to real uploads.',
+    keywords: ['@char','@tool','@product','mention','resolve','handle']
+  },
+  {
+    id: 'buildContext',
+    title: 'Build Agent Context',
+    category: 'context',
+    description: 'Compresses project, wallet, assets, history and user request into a clean context object for the agent path.',
+    whenToUse: ['before mission director', 'before multi-agent workflow', 'when inputs are scattered'],
+    avoidWhen: ['small deterministic action with all inputs already present'],
+    requiredInputs: ['project','operationInput'],
+    outputUse: 'Creates consistent context boundaries for every agent.',
+    keywords: ['context','compact','memory','summary','downstream']
+  },
+  {
+    id: 'callCreativeModel',
+    title: 'Creative Model Call',
+    category: 'model',
+    description: 'Paid model lane for storyboards, scripts, hooks, campaign maps and prompt generation.',
+    whenToUse: ['creative planning', 'storyboard', 'script', 'campaign', 'hook', 'prompt generation'],
+    avoidWhen: ['deterministic math', 'simple CRUD', 'unpaid execution without preview policy'],
+    requiredInputs: ['agentSystemPrompt','context','outputSchema'],
+    outputUse: 'Produces structured creative artifacts.',
+    keywords: ['creative','storyboard','script','hook','campaign','prompt','claude','model']
+  },
+  {
+    id: 'callDirectorModel',
+    title: 'Director Model Call',
+    category: 'model',
+    description: 'Paid strategic reasoning lane for Mission Director, Creative Strategy, Recovery and Cross-Workflow coordination.',
+    whenToUse: ['complex workflow selection', 'conflicting inputs', 'multi-workflow coordination', 'failure recovery'],
+    avoidWhen: ['simple route or exact calculation'],
+    requiredInputs: ['systemPrompt','context','decisionSchema'],
+    outputUse: 'Makes high-level operational decisions.',
+    keywords: ['director','mission','strategy','decision','coordinate','recovery']
+  },
+  {
+    id: 'callLongContextModel',
+    title: 'Long Context Model Call',
+    category: 'model',
+    description: 'Paid lane for long research, reference accounts, documentary research, and project memory compression.',
+    whenToUse: ['large references', 'research notes', 'long conversation', 'documentary facts', 'account analysis'],
+    avoidWhen: ['short prompt or small deterministic task'],
+    requiredInputs: ['longContext','query','outputSchema'],
+    outputUse: 'Summarizes and extracts from large context.',
+    keywords: ['long context','research','reference','documentary','memory','gemini']
+  },
+  {
+    id: 'searchWeb',
+    title: 'Web Research',
+    category: 'research',
+    description: 'Finds current external information for market, trends, documentary facts, or competitor research. Must be source-bound later.',
+    whenToUse: ['current trends', 'market research', 'documentary facts', 'competitor data'],
+    avoidWhen: ['project-only creative work', 'no need for current facts', 'paid operation not approved'],
+    requiredInputs: ['query','market','dateRange'],
+    outputUse: 'Creates evidence pack for research agents.',
+    keywords: ['web','trend','market','current','research','competitor','youtube','tiktok','instagram']
+  },
+  {
+    id: 'analyzeReferenceAccount',
+    title: 'Reference Account Analysis',
+    category: 'marketing',
+    description: 'Analyzes provided TikTok, Instagram or YouTube usernames/accounts for content style, audience, successful patterns and gaps.',
+    whenToUse: ['marketing agent has reference accounts', 'user mentions @account', 'campaign wants competitor-inspired strategy'],
+    avoidWhen: ['no account provided', 'platform access unavailable'],
+    requiredInputs: ['platform','username','availableMetrics'],
+    outputUse: 'Feeds business understanding and campaign planner.',
+    keywords: ['reference account','instagram','tiktok','youtube','competitor','profile','account']
+  },
+  {
+    id: 'createTaskGraph',
+    title: 'Create Task Graph',
+    category: 'execution',
+    description: 'Converts approved plans into executable jobs with dependencies, provider targets, payloads, and retry policy.',
+    whenToUse: ['after plan approval', 'before provider execution', 'batch generation'],
+    avoidWhen: ['plan is not approved', 'no execution intended'],
+    requiredInputs: ['approvedPlan','workflowType','budget'],
+    outputUse: 'Defines job order and execution safety.',
+    keywords: ['task graph','jobs','dependencies','batch','execution','queue']
+  },
+  {
+    id: 'estimateCost',
+    title: 'Estimate Cost',
+    category: 'billing',
+    description: 'Calculates low/high credit estimate and required reserve using server pricing rules.',
+    whenToUse: ['before any paid operation', 'before reserve', 'when user changes duration/quality/count'],
+    avoidWhen: ['never avoid before paid execution'],
+    requiredInputs: ['operationType','durationSeconds','quality','agentLevel','count'],
+    outputUse: 'Protects wallet and blocks insufficient credit execution.',
+    keywords: ['estimate','credits','cost','reserve','wallet','price']
+  },
+  {
+    id: 'reserveCredits',
+    title: 'Reserve Credits',
+    category: 'billing',
+    description: 'Checks available wallet balance and reserves the high estimate before operation starts.',
+    whenToUse: ['immediately before execution or dry-run run start if configured'],
+    avoidWhen: ['preview catalog browsing', 'unpaid user'],
+    requiredInputs: ['userId','projectId','estimatedHighCredits'],
+    outputUse: 'Creates financial lock for operation.',
+    keywords: ['reserve','wallet','credits','payment','balance']
+  },
+  {
+    id: 'submitHiggsfieldJob',
+    title: 'Submit Higgsfield Job',
+    category: 'execution',
+    description: 'Payment-gated provider execution for video, image, voice, avatar and editor jobs. Disabled until credentials and provider runner are connected.',
+    whenToUse: ['approved paid execution', 'film clips', 'UGC videos', 'documentary visuals', 'avatar production'],
+    avoidWhen: ['dry-run', 'no reserved credits', 'no user approval', 'missing provider credentials'],
+    requiredInputs: ['providerPayload','reservationId','projectId'],
+    outputUse: 'Creates real provider job later.',
+    keywords: ['higgsfield','video','image','voice','avatar','editor','provider','execution']
+  },
+  {
+    id: 'runQA',
+    title: 'Run QA',
+    category: 'quality',
+    description: 'Checks generated outputs against approved plan, brief, assets, style and delivery readiness.',
+    whenToUse: ['after output exists', 'before delivery', 'after regeneration'],
+    avoidWhen: ['no output exists'],
+    requiredInputs: ['output','approvedPlan','brief','assets'],
+    outputUse: 'Produces QA report and delivery readiness state.',
+    keywords: ['qa','quality','review','delivery','consistency','output']
+  },
+  {
+    id: 'packageDelivery',
+    title: 'Package Delivery',
+    category: 'delivery',
+    description: 'Bundles videos, scripts, captions, notes and links into client-facing deliverables.',
+    whenToUse: ['after QA passes', 'admin/manual delivery', 'campaign pack ready'],
+    avoidWhen: ['outputs incomplete or QA failed'],
+    requiredInputs: ['deliverables','qaReport','clientNotes'],
+    outputUse: 'Creates clean client delivery package.',
+    keywords: ['deliver','package','files','download','client','final']
+  }
+];
+
+function opsTokenize(text='') {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_@\u0600-\u06ff]+/gi, ' ')
+    .split(/\s+/)
+    .filter((w) => w && w.length > 1);
+}
+
+function opsScoreDoc(doc, queryTokens, agent, workflowType='') {
+  const hay = opsTokenize([doc.id, doc.title, doc.category, doc.description, ...(doc.keywords||[]), ...(doc.whenToUse||[]), ...(doc.avoidWhen||[])].join(' '));
+  const haySet = new Set(hay);
+  let score = 0;
+  const matched = [];
+  for (const t of queryTokens) {
+    if (haySet.has(t) || hay.some((h) => h.includes(t) || t.includes(h))) { score += 8; matched.push(t); }
+  }
+  if (agent?.skills?.includes(doc.id)) score += 60;
+  if (String(workflowType).includes('film') && ['assets','model','execution','quality','context'].includes(doc.category)) score += 6;
+  if (String(workflowType).includes('marketing') && ['marketing','research','model','execution','billing'].includes(doc.category)) score += 6;
+  if (String(workflowType).includes('documentary') && ['research','model','execution','quality'].includes(doc.category)) score += 6;
+  if (String(workflowType).includes('avatar') && ['assets','model','execution','quality'].includes(doc.category)) score += 6;
+  return { score, matched: [...new Set(matched)].slice(0, 12) };
+}
+
+function opsSkillRagSearch({ query='', agentId='', workflowType='', limit=8 }={}) {
+  const agent = opsAgent(agentId);
+  const fullQuery = [query, agentId, workflowType, agent?.role, ...(agent?.skills || [])].join(' ');
+  const queryTokens = opsTokenize(fullQuery);
+  return OPS_SKILL_KNOWLEDGE_BASE
+    .map((doc) => {
+      const s = opsScoreDoc(doc, queryTokens, agent, workflowType);
+      return { ...doc, score: s.score, matchedTerms: s.matched, compatibleWithAgent: Boolean(agent?.skills?.includes(doc.id)) };
+    })
+    .filter((d) => d.score > 0)
+    .sort((a,b) => b.score - a.score || a.id.localeCompare(b.id))
+    .slice(0, Math.max(1, Math.min(20, Number(limit || 8))));
+}
+
+function opsAgentInputSchema(agent) {
+  const base = {
+    type: 'object',
+    required: ['projectId','workflowType','operationInput'],
+    properties: {
+      projectId: { type: 'string' },
+      workflowType: { type: 'string' },
+      operationInput: { type: 'object' },
+      projectContext: { type: 'object' },
+      wallet: { type: 'object' },
+      assets: { type: 'array' },
+      previousAgentOutputs: { type: 'array' }
+    }
+  };
+  if (/cost|credit|approval/.test(agent.id)) base.required.push('estimate');
+  if (/storyboard|scene|frame|film/.test(agent.id)) base.properties.filmContext = { type: 'object' };
+  if (/campaign|ugc|hook|script|audience|market|trend/.test(agent.id)) base.properties.marketingContext = { type: 'object' };
+  return base;
+}
+
+function opsAgentOutputSchema(agent) {
+  const common = {
+    type: 'object',
+    required: ['status','summary','confidence','selectedSkills','nextAction'],
+    properties: {
+      status: { enum: ['ok','blocked','needs_input','failed'] },
+      summary: { type: 'string' },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+      selectedSkills: { type: 'array' },
+      missingFields: { type: 'array' },
+      warnings: { type: 'array' },
+      nextAction: { type: 'string' },
+      artifact: { type: 'object' }
+    }
+  };
+  if (/storyboard|scene|frame/.test(agent.id)) common.properties.artifact = { type: 'object', description: 'Scene plan, storyboard, frame prompts or Higgsfield payload draft.' };
+  if (/campaign|ugc|hook|script|caption/.test(agent.id)) common.properties.artifact = { type: 'object', description: 'Campaign map, UGC jobs, hooks, scripts or captions.' };
+  if (/cost|credit|approval/.test(agent.id)) common.properties.artifact = { type: 'object', description: 'Cost estimate, reservation result or approval gate state.' };
+  return common;
+}
+
+function opsEvaluationRubricFor(agent) {
+  const rubrics = [
+    'Uses only allowed skills and explains why each selected skill is needed.',
+    'Does not invent project, payment, asset or provider state.',
+    'Returns structured output matching the output schema.',
+    'Blocks paid execution unless reserve/approval requirements are satisfied.'
+  ];
+  if (/film|storyboard|scene|frame|higgsfield/.test(agent.id)) rubrics.push('Preserves character/product/tool consistency and turns the idea into executable scene structure.');
+  if (/marketing|campaign|ugc|hook|script|trend|audience/.test(agent.id)) rubrics.push('Connects business goal to practical campaign jobs, hooks and platform logic.');
+  if (/research|trend|documentary/.test(agent.id)) rubrics.push('Separates provided evidence from assumptions and marks unknowns.');
+  if (/qa|consistency|safety/.test(agent.id)) rubrics.push('Flags mismatch, missing deliverables and quality risks before delivery.');
+  return rubrics;
+}
+
+function buildAgentAttachment(agentId) {
+  const agent = opsAgent(agentId);
+  if (!agent) return null;
+  const skills = opsSkillRagSearch({ agentId, workflowType: agent.module, query: `${agent.role} ${(agent.skills||[]).join(' ')}`, limit: 10 });
+  const promptPack = buildAgentPromptPack(agent);
+  return {
+    version: OPS_ATTACHMENT_VERSION,
+    id: agent.id,
+    module: agent.module,
+    modelLane: agent.modelLane,
+    role: agent.role,
+    enabled: agent.enabled,
+    costLevel: agent.costLevel,
+    requiresPaidExecution: agent.requiresPaidExecution,
+    requiresApproval: agent.requiresApproval,
+    canUseInternet: agent.canUseInternet,
+    allowedSkills: agent.skills || [],
+    ragRecommendedSkillDocs: skills,
+    promptPack,
+    inputSchema: opsAgentInputSchema(agent),
+    outputSchema: opsAgentOutputSchema(agent),
+    selfEvaluation: {
+      mustRunBeforeOutput: true,
+      decisionFields: ['needsSkill','selectedSkills','why','confidence','blockedReason'],
+      questions: promptPack.selfEvaluationQuestions
+    },
+    evaluationRubric: opsEvaluationRubricFor(agent),
+    operatingPolicy: {
+      previewAllowedWithoutPayment: !agent.requiresPaidExecution,
+      paidModelCallAllowedOnlyAfterReservation: Boolean(agent.requiresPaidExecution),
+      providerExecutionAllowed: agent.modelLane === 'higgsfield_execution' ? 'only through payment-gated provider runner' : 'never directly',
+      noDirectExternalCalls: true
+    },
+    handoff: {
+      nextAgentsAreSelectedByWorkflowRouter: true,
+      expectedArtifacts: promptPack.expectedArtifacts
+    }
+  };
+}
+
+function opsWorkflowBlueprint(workflowType='service_agent') {
+  const agents = OPS_WORKFLOW_TEMPLATES[workflowType] || OPS_WORKFLOW_TEMPLATES.service_agent || [];
+  return {
+    workflowType,
+    version: OPS_ATTACHMENT_VERSION,
+    objective: {
+      film_maker: 'Convert a project brief into film planning, scene structure, provider payloads and QA path.',
+      marketing_agent: 'Understand a business, plan campaign jobs, expand UGC, and prepare execution path.',
+      youtube_documentary: 'Select or process topic, research, script, beat-split visuals and prepare narration/execution.',
+      ugc_avatar: 'Validate avatar inputs, prepare identity lock and usage plan.',
+      service_agent: 'Act as top-level coordinator across tools and workflows.'
+    }[workflowType] || 'Operational workflow',
+    phases: agents.map((agentId, idx) => {
+      const agent = opsAgent(agentId);
+      const attachment = buildAgentAttachment(agentId);
+      return {
+        step: idx + 1,
+        agentId,
+        module: agent?.module,
+        modelLane: agent?.modelLane,
+        role: agent?.role,
+        costLevel: agent?.costLevel,
+        requiresPaidExecution: agent?.requiresPaidExecution,
+        allowedSkills: agent?.skills || [],
+        topRagSkills: (attachment?.ragRecommendedSkillDocs || []).slice(0, 5).map((s) => ({ id: s.id, score: s.score, category: s.category, title: s.title })),
+        expectedArtifacts: attachment?.promptPack?.expectedArtifacts || []
+      };
+    }),
+    hardRules: [
+      'Estimate and reserve credits before paid execution.',
+      'Run self-evaluation before skill use.',
+      'Use Skill RAG to choose skills; do not assume all skills are needed.',
+      'Dry-run mode never calls external AI or Higgsfield APIs.',
+      'Provider execution is introduced later through payment-gated runners only.'
+    ]
+  };
+}
+
+function opsBuildProjectMindPreview({ project, body, wallet }) {
+  const input = opsDefaultInput(project, body || {});
+  const workflowType = opsWorkflowFor(input.operationType || input.workflowType || project.serviceType || 'service_agent');
+  const blueprint = opsWorkflowBlueprint(workflowType);
+  const estimate = estimateOperationCredits(input);
+  const required = Number(estimate.requiredCredits || estimate.estimatedHighCredits || 0);
+  const available = Number(wallet?.availableCredits || 0);
+  return {
+    projectId: project.id,
+    workflowType,
+    operationInput: input,
+    estimate,
+    walletCheck: {
+      availableCredits: available,
+      requiredCredits: required,
+      canReserve: available >= required
+    },
+    blueprint,
+    firstAgents: blueprint.phases.slice(0, 6),
+    nextBackendAction: available >= required ? 'can_create_plan_and_reserve' : 'top_up_required_before_reserve'
+  };
+}
+// --- END STEP 26 ---
+
 async function handleApi(req, res, url) {
   const method = req.method || 'GET';
   const pathname = url.pathname;
@@ -2470,6 +2883,99 @@ async function handleApi(req, res, url) {
 
 
 
+
+
+
+  // --- STEP 26: OPERATIONAL MIND ATTACHMENTS + SKILL RAG ROUTES ---
+  if (method === 'GET' && pathname === '/api/ops/model-lanes') {
+    json(res, 200, { version: OPS_ATTACHMENT_VERSION, modelLanes: OPS_MODEL_LANES });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/ops/attachments') {
+    json(res, 200, { version: OPS_ATTACHMENT_VERSION, attachments: OPS_AGENT_REGISTRY.map((a) => buildAgentAttachment(a.id)) });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/ops/agents/:id/attachment');
+  if (params && method === 'GET') {
+    const attachment = buildAgentAttachment(params.id);
+    if (!attachment) return notFound(res);
+    json(res, 200, { attachment });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/ops/rag/skills') {
+    const query = url.searchParams.get('q') || '';
+    const agentId = url.searchParams.get('agentId') || '';
+    const workflowType = url.searchParams.get('workflowType') || '';
+    const limit = Number(url.searchParams.get('limit') || 8);
+    json(res, 200, { query, agentId, workflowType, skills: opsSkillRagSearch({ query, agentId, workflowType, limit }) });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/ops/rag/skills/search') {
+    const body = await readBody(req);
+    json(res, 200, { skills: opsSkillRagSearch({ query: body.query || body.task || '', agentId: body.agentId || '', workflowType: body.workflowType || '', limit: body.limit || 8 }) });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/ops/workflows/:type/blueprint');
+  if (params && method === 'GET') {
+    json(res, 200, { blueprint: opsWorkflowBlueprint(params.type) });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/projects/:id/ops/preview-mind');
+  if (params && method === 'POST') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const project = ctx.db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const body = await readBody(req);
+    const wallet = ensureWallet(ctx.db, ctx.user.id);
+    const preview = opsBuildProjectMindPreview({ project, body, wallet });
+    pushActivity(ctx.db, { userId: ctx.user.id, sessionId: ctx.session?.id, action: 'ops.mind_previewed', entityType: 'project', entityId: project.id, summary: `Operational mind preview: ${preview.workflowType}`, metadata: { requiredCredits: preview.estimate.requiredCredits, canReserve: preview.walletCheck.canReserve }, req });
+    await saveDb(ctx.db);
+    json(res, 200, { preview });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/ops/runs/:id/run-all-dry');
+  if (params && method === 'POST') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const run = (ctx.db.opsRuns || []).find((r) => r.id === params.id);
+    if (!run) return notFound(res);
+    const project = ctx.db.projects.find((p) => p.id === run.projectId);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const plan = (ctx.db.opsPlans || []).find((p) => p.id === run.planId);
+    if (!plan) return fail(res, 404, 'plan_not_found', 'Ops plan not found for this run');
+    let completed = 0;
+    for (const step of (run.steps || [])) {
+      if (step.status === 'completed') continue;
+      step.status = 'completed';
+      step.startedAt ||= now();
+      step.completedAt = now();
+      step.output = buildDryRunAgentOutput(step.agentId, plan, step.step || completed + 1);
+      run.currentStep = Math.max(Number(run.currentStep || 0), Number(step.step || 0));
+      run.artifacts ||= [];
+      if (step.output?.artifact) run.artifacts.push({ id: id('artifact'), agentId: step.agentId, ...step.output.artifact, createdAt: now() });
+      run.timeline ||= [];
+      run.timeline.push({ at: now(), type: 'agent_step_completed', agentId: step.agentId, step: step.step, message: 'Dry-run agent step completed through run-all-dry.' });
+      completed += 1;
+    }
+    run.status = 'dry_run_complete_ready_for_actual_cost';
+    run.actualCreditsDraft = opsRunActualCreditsDraft(run, plan);
+    run.updatedAt = now();
+    pushActivity(ctx.db, { userId: ctx.user.id, sessionId: ctx.session?.id, action: 'ops.run_all_dry_completed', entityType: 'project', entityId: project.id, summary: `Operational dry-run completed: ${run.workflowType}`, metadata: { runId: run.id, completed, actualCreditsDraft: run.actualCreditsDraft }, req });
+    await saveDb(ctx.db);
+    json(res, 200, { run, completed, actualCreditsDraft: run.actualCreditsDraft });
+    return true;
+  }
+  // --- END STEP 26 ROUTES ---
 
   if (method === 'GET' && pathname === '/api/ops/catalog') {
     json(res, 200, {
