@@ -2232,9 +2232,11 @@ function buildOpsPlan({ project, body = {}, userId, estimate }) {
     title: String(body.title || `Operational plan · ${workflowType}`).slice(0, 160),
     input: sanitizeMeta(input),
     estimate: sanitizeMeta(estimate),
-    agents: agents.map((a, i) => ({ step: i + 1, id: a.id, module: a.module, modelLane: a.modelLane, role: a.role, costLevel: a.costLevel, skills: a.skills })),
+    agents: agents.map((a, i) => ({ step: i + 1, id: a.id, name: a.name, module: a.module, modelLane: a.modelLane, role: a.role, costLevel: a.costLevel, skills: a.skills, promptId: opsPromptId(a.id), skillEvaluation: opsEvaluateAgentSkillNeed({ agentId: a.id, workflowType, task: `${workflowType} planning step ${i + 1}`, operationInput: input }) })),
     skills: opsSuggestedSkills(agentIds),
     gates: { requiresCredits: true, requiresApproval: true, reserveBeforeExecution: true, chargeActualAndRefundUnused: true },
+    promptPackVersion: OPS_PROMPT_PACK_VERSION,
+    estimatedArtifacts: agents.flatMap((a) => expectedArtifactsForAgent(a.id)).filter((v, i, arr) => arr.indexOf(v) === i),
     nextAction: 'reserve_credits_before_execution',
     createdAt: now(),
     updatedAt: now()
@@ -2250,11 +2252,199 @@ function opsRunFromPlan(plan, reservation) {
     workflowType: plan.workflowType,
     status: reservation ? 'reserved_waiting_manual_execution' : 'planned',
     currentStep: 0,
-    steps: plan.agents.map((a) => ({ agentId: a.id, status: 'pending', module: a.module, modelLane: a.modelLane, costLevel: a.costLevel })),
+    steps: plan.agents.map((a, i) => ({ step: i + 1, agentId: a.id, status: 'pending', module: a.module, modelLane: a.modelLane, costLevel: a.costLevel, instruction: buildStepInstruction(opsAgent(a.id) || a, plan, i), output: null, startedAt: null, completedAt: null })),
+    timeline: [{ at: now(), type: 'run_created', message: 'Ops run created from approved/reserved plan.' }],
+    artifacts: [],
     createdAt: now(),
     updatedAt: now()
   };
 }
+
+// --- STEP 23: OPERATIONAL MINDS CONTROL LAYER ---
+const OPS_PROMPT_PACK_VERSION = 'ops_prompts_v1_dry_run';
+
+const OPS_KEYWORD_SKILL_HINTS = {
+  film: ['callCreativeModel','resolveMentions','readAssets','createTaskGraph','submitHiggsfieldJob','runQA'],
+  cinematic: ['callCreativeModel','readAssets','createTaskGraph','submitHiggsfieldJob'],
+  storyboard: ['callCreativeModel','readAssets','createTaskGraph'],
+  scene: ['callCreativeModel','readAssets'],
+  marketing: ['readReferences','searchWeb','analyzeReferenceAccount','callCreativeModel','createTaskGraph'],
+  campaign: ['readReferences','searchWeb','callCreativeModel','createTaskGraph'],
+  ugc: ['callCreativeModel','readAssets','submitHiggsfieldJob'],
+  documentary: ['searchWeb','callLongContextModel','callCreativeModel','createTaskGraph'],
+  research: ['searchWeb','callLongContextModel','readReferences'],
+  avatar: ['callMultimodalModel','readAssets','submitHiggsfieldJob'],
+  billing: ['estimateCost','reserveCredits'],
+  credits: ['estimateCost','reserveCredits'],
+  qa: ['runQA','readProject','readAssets'],
+};
+
+function opsPromptId(agentId) {
+  return `prompt_${agentId}_${OPS_PROMPT_PACK_VERSION}`;
+}
+
+function buildAgentPromptPack(agent) {
+  const a = agent || {};
+  const role = a.role || 'Specialist operating unit.';
+  const skills = (a.skills || []).join(', ') || 'none';
+  return {
+    id: opsPromptId(a.id || 'unknown_agent'),
+    version: OPS_PROMPT_PACK_VERSION,
+    agentId: a.id,
+    name: a.name,
+    module: a.module,
+    modelLane: a.modelLane,
+    systemPrompt: [
+      `You are ${a.name || a.id}, a specialist operating unit inside Content Machine.`,
+      `Your role: ${role}`,
+      'You do not behave like a general chatbot. You produce structured operational output only.',
+      'You must never start paid provider execution. Paid execution is only allowed through payment-gated runners.',
+      'Before using any skill, evaluate whether the skill is actually needed, useful, and allowed for this step.',
+      'If required context is missing, report missingFields instead of inventing details.',
+      'Return JSON only when invoked by the backend runner.'
+    ].join('\n'),
+    inputContract: {
+      required: ['workflowId','project','operationInput','currentStepContext'],
+      optional: ['assets','references','previousAgentOutputs','wallet','estimate','skills']
+    },
+    outputContract: {
+      required: ['status','summary','confidence','nextAction'],
+      optional: ['missingFields','selectedSkills','artifact','handoff','warnings']
+    },
+    allowedSkills: a.skills || [],
+    guardrails: [
+      'Do not call external APIs directly.',
+      'Do not spend credits.',
+      'Do not claim provider execution has happened unless a provider job result exists.',
+      'Do not expose internal cost breakdown to customers unless explicitly allowed.',
+      'Do not hallucinate uploaded assets, payment status, or project state.'
+    ],
+    selfEvaluationQuestions: [
+      'Do I have enough project context?',
+      `Do I need one of my allowed skills: ${skills}?`,
+      'Will this skill change the output quality enough to justify using it?',
+      'Is the operation paid or preview-only?',
+      'What should I hand off to the next agent?'
+    ],
+    expectedArtifacts: expectedArtifactsForAgent(a.id)
+  };
+}
+
+function expectedArtifactsForAgent(agentId='') {
+  if (/storyboard|scene|frame|film/.test(agentId)) return ['film_concept','scene_plan','storyboard','higgsfield_payload_draft'];
+  if (/campaign|ugc|hook|script|caption|marketing|trend|viral|failure|audience/.test(agentId)) return ['business_understanding','campaign_map','ugc_jobs','hooks','scripts'];
+  if (/documentary|topic|beat|narration/.test(agentId)) return ['topic_options','research_notes','script','visual_beats','narration_plan'];
+  if (/avatar|identity/.test(agentId)) return ['avatar_input_report','identity_lock_plan','avatar_usage_plan'];
+  if (/cost|credit|approval|dispatcher|task/.test(agentId)) return ['cost_estimate','task_graph','approval_gate_result'];
+  if (/qa|delivery|summary/.test(agentId)) return ['qa_report','delivery_package','client_summary'];
+  return ['structured_agent_output'];
+}
+
+function allPromptPacks() {
+  return OPS_AGENT_REGISTRY.map(buildAgentPromptPack);
+}
+
+function normalizeSearchText(...parts) {
+  return parts.filter(Boolean).join(' ').toLowerCase();
+}
+
+function opsRecommendSkills({ agentId = '', workflowType = '', task = '', operationType = '', limit = 8 } = {}) {
+  const agent = opsAgent(agentId);
+  const agentSkillIds = new Set(agent?.skills || []);
+  const text = normalizeSearchText(agentId, workflowType, operationType, task);
+  const scores = [];
+  for (const skill of OPS_SKILL_REGISTRY) {
+    let score = 0;
+    const reasons = [];
+    if (agentSkillIds.has(skill.id)) { score += 70; reasons.push('allowed_by_agent'); }
+    const skText = normalizeSearchText(skill.id, skill.description, skill.costBucket);
+    for (const [kw, hinted] of Object.entries(OPS_KEYWORD_SKILL_HINTS)) {
+      if (text.includes(kw) && (hinted.includes(skill.id) || skText.includes(kw))) {
+        score += 15;
+        reasons.push(`task_keyword:${kw}`);
+      }
+    }
+    if (workflowType && skText.includes(workflowType.replace('_',' '))) { score += 8; reasons.push('workflow_text_match'); }
+    if (agent && skill.costBucket === 'system') { score += 2; reasons.push('safe_system_skill'); }
+    if (score > 0) scores.push({ ...skill, score, reasons });
+  }
+  return scores.sort((a,b) => b.score - a.score).slice(0, Number(limit || 8));
+}
+
+function opsEvaluateAgentSkillNeed({ agentId, workflowType = '', task = '', operationInput = {} } = {}) {
+  const agent = opsAgent(agentId);
+  if (!agent) return { agentId, exists: false, needsSkill: false, confidence: 0, selectedSkills: [], reason: 'Agent not found' };
+  const selectedSkills = opsRecommendSkills({ agentId, workflowType, task, operationType: operationInput.operationType, limit: 6 });
+  const hasPaidOrApiSkill = selectedSkills.some((s) => s.costBucket === 'api');
+  const hasSystemSkill = selectedSkills.some((s) => s.costBucket === 'system');
+  const needsSkill = selectedSkills.length > 0 && (agent.modelLane !== 'deterministic' || hasSystemSkill || hasPaidOrApiSkill);
+  const confidence = Math.min(0.95, 0.45 + (selectedSkills[0]?.score || 0) / 120);
+  return {
+    agentId: agent.id,
+    agentName: agent.name,
+    workflowType,
+    needsSkill,
+    confidence: Number(confidence.toFixed(2)),
+    selectedSkills: selectedSkills.map((s) => ({ id: s.id, costBucket: s.costBucket, score: s.score, reasons: s.reasons })),
+    reason: needsSkill ? 'Useful skills are available and allowed for this agent.' : 'No additional skill is needed for this step.',
+    paidExecutionBlocked: hasPaidOrApiSkill,
+    rule: 'This is a dry-run evaluation only. No provider API is called here.'
+  };
+}
+
+function buildStepInstruction(agent, plan, stepIndex) {
+  const promptPack = buildAgentPromptPack(agent);
+  const task = `${plan.workflowType} step ${stepIndex + 1}: ${agent.role || agent.id}`;
+  const skillEvaluation = opsEvaluateAgentSkillNeed({ agentId: agent.id, workflowType: plan.workflowType, task, operationInput: plan.input });
+  return {
+    promptId: promptPack.id,
+    promptVersion: promptPack.version,
+    role: agent.role,
+    inputContract: promptPack.inputContract,
+    outputContract: promptPack.outputContract,
+    allowedSkills: promptPack.allowedSkills,
+    expectedArtifacts: promptPack.expectedArtifacts,
+    skillEvaluation,
+    guardrails: promptPack.guardrails
+  };
+}
+
+function buildDryRunAgentOutput(agentId, plan, stepNumber) {
+  const agent = opsAgent(agentId) || { id: agentId, name: agentId, module: 'unknown', modelLane: 'deterministic' };
+  const skillEvaluation = opsEvaluateAgentSkillNeed({ agentId, workflowType: plan.workflowType, task: `${plan.workflowType} dry run`, operationInput: plan.input });
+  return {
+    status: 'completed_dry_run',
+    agentId,
+    agentName: agent.name,
+    module: agent.module,
+    modelLane: agent.modelLane,
+    stepNumber,
+    summary: `${agent.name || agentId} completed a dry-run planning step. No paid API was called.`,
+    confidence: skillEvaluation.confidence || 0.7,
+    selectedSkills: skillEvaluation.selectedSkills,
+    artifact: {
+      type: expectedArtifactsForAgent(agentId)[0],
+      title: `${agent.name || agentId} output draft`,
+      data: {
+        workflowType: plan.workflowType,
+        planId: plan.id,
+        note: 'Dry-run artifact placeholder. Real provider/model output plugs in here later.'
+      }
+    },
+    nextAction: 'continue_to_next_agent'
+  };
+}
+
+function opsRunActualCreditsDraft(run, plan) {
+  const low = Number(plan?.estimate?.estimatedLowCredits || 0);
+  const high = Number(plan?.estimate?.estimatedHighCredits || plan?.estimate?.requiredCredits || 0);
+  if (!low && !high) return 0;
+  // For dry-run/manual completion, assume actual cost starts at the low estimate.
+  // Real provider usage will replace this when API execution is enabled.
+  return Math.max(1, low || Math.ceil(high * 0.85));
+}
+// --- END STEP 23: OPERATIONAL MINDS CONTROL LAYER ---
+
 // --- END STEP 22 ---
 
 async function handleApi(req, res, url) {
@@ -2298,6 +2488,35 @@ async function handleApi(req, res, url) {
 
   if (method === 'GET' && pathname === '/api/ops/skills') {
     json(res, 200, { skills: OPS_SKILL_REGISTRY });
+    return true;
+  }
+
+
+  if (method === 'GET' && pathname === '/api/ops/prompts') {
+    json(res, 200, { version: OPS_PROMPT_PACK_VERSION, prompts: allPromptPacks() });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/ops/prompts/:id');
+  if (params && method === 'GET') {
+    const agent = opsAgent(params.id);
+    if (!agent) return notFound(res);
+    json(res, 200, { prompt: buildAgentPromptPack(agent) });
+    return true;
+  }
+
+  if (method === 'POST' && pathname === '/api/ops/skills/recommend') {
+    const body = await readBody(req);
+    const skills = opsRecommendSkills({ agentId: body.agentId, workflowType: body.workflowType, task: body.task, operationType: body.operationType, limit: body.limit || 8 });
+    json(res, 200, { skills });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/ops/agents/:id/evaluate');
+  if (params && method === 'POST') {
+    const body = await readBody(req);
+    const evaluation = opsEvaluateAgentSkillNeed({ agentId: params.id, workflowType: body.workflowType, task: body.task, operationInput: body.operationInput || body });
+    json(res, 200, { evaluation });
     return true;
   }
 
@@ -2376,6 +2595,73 @@ async function handleApi(req, res, url) {
     if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
     const runs = (ctx.db.opsRuns || []).filter((r) => r.projectId === project.id).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     json(res, 200, { runs });
+    return true;
+  }
+
+
+  params = routeMatch(pathname, '/api/ops/runs/:id');
+  if (params && method === 'GET') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const run = (ctx.db.opsRuns || []).find((r) => r.id === params.id);
+    if (!run) return notFound(res);
+    const project = ctx.db.projects.find((p) => p.id === run.projectId);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const plan = (ctx.db.opsPlans || []).find((p) => p.id === run.planId) || null;
+    json(res, 200, { run, plan });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/ops/runs/:id/step');
+  if (params && method === 'POST') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const run = (ctx.db.opsRuns || []).find((r) => r.id === params.id);
+    if (!run) return notFound(res);
+    const project = ctx.db.projects.find((p) => p.id === run.projectId);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const plan = (ctx.db.opsPlans || []).find((p) => p.id === run.planId);
+    if (!plan) return fail(res, 404, 'plan_not_found', 'Ops plan not found for this run');
+    const nextStep = (run.steps || []).find((s) => s.status === 'pending' || s.status === 'running');
+    if (!nextStep) return fail(res, 400, 'run_already_complete', 'No pending step left');
+    nextStep.status = 'completed';
+    nextStep.startedAt ||= now();
+    nextStep.completedAt = now();
+    nextStep.output = buildDryRunAgentOutput(nextStep.agentId, plan, nextStep.step || ((run.currentStep || 0) + 1));
+    run.currentStep = Math.max(Number(run.currentStep || 0), Number(nextStep.step || 0));
+    run.status = (run.steps || []).every((s) => s.status === 'completed') ? 'dry_run_complete_ready_for_actual_cost' : 'running_dry_run';
+    run.artifacts ||= [];
+    if (nextStep.output?.artifact) run.artifacts.push({ id: id('artifact'), agentId: nextStep.agentId, ...nextStep.output.artifact, createdAt: now() });
+    run.timeline ||= [];
+    run.timeline.push({ at: now(), type: 'agent_step_completed', agentId: nextStep.agentId, step: nextStep.step, message: 'Dry-run agent step completed without paid API calls.' });
+    run.updatedAt = now();
+    pushActivity(ctx.db, { userId: ctx.user.id, sessionId: ctx.session?.id, action: 'ops.step_completed', entityType: 'project', entityId: project.id, summary: `Ops agent step completed: ${nextStep.agentId}`, metadata: { runId: run.id, step: nextStep.step, dryRun: true }, req });
+    await saveDb(ctx.db);
+    json(res, 200, { run, step: nextStep });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/ops/runs/:id/complete-dry-run');
+  if (params && method === 'POST') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const run = (ctx.db.opsRuns || []).find((r) => r.id === params.id);
+    if (!run) return notFound(res);
+    const project = ctx.db.projects.find((p) => p.id === run.projectId);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const plan = (ctx.db.opsPlans || []).find((p) => p.id === run.planId);
+    if (!plan) return fail(res, 404, 'plan_not_found', 'Ops plan not found for this run');
+    const actualCreditsDraft = opsRunActualCreditsDraft(run, plan);
+    run.status = 'dry_run_complete_ready_for_finalize';
+    run.actualCreditsDraft = actualCreditsDraft;
+    run.timeline ||= [];
+    run.timeline.push({ at: now(), type: 'dry_run_completed', message: `Dry-run completed. Suggested actual credits: ${actualCreditsDraft}.` });
+    run.updatedAt = now();
+    await saveDb(ctx.db);
+    json(res, 200, { run, actualCreditsDraft, reservationId: run.reservationId, nextAction: 'admin_finalize_reservation_with_actualCreditsDraft' });
     return true;
   }
 
