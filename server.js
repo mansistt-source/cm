@@ -2817,8 +2817,34 @@ async function handleApi(req, res, url) {
     const ctx = await requireUserWithDb(req, res);
     if (!ctx) return true;
     const body = await readBody(req);
-    const plan = findTopupPlan(String(body.planKey || ''));
-    if (!plan) return fail(res, 400, 'bad_topup_plan', 'Choose a valid credit top-up plan');
+
+    let plan = null;
+    const planKey = String(body.planKey || '').trim();
+    if (planKey) plan = findTopupPlan(planKey);
+
+    // Flexible top-up: the customer may choose any amount >= MIN_TOPUP_USD.
+    // The frontend is not trusted. The server validates the amount and calculates credits here.
+    if (!plan && body.amountUsd != null) {
+      const rawAmount = Number(body.amountUsd);
+      const amountUsd = money(rawAmount);
+      const maxTopupUsd = Number(process.env.MAX_TOPUP_USD || 5000);
+      if (!Number.isFinite(amountUsd) || amountUsd < MIN_TOPUP_USD) {
+        return fail(res, 400, 'topup_minimum_required', `Minimum top-up is $${MIN_TOPUP_USD}`);
+      }
+      if (amountUsd > maxTopupUsd) {
+        return fail(res, 400, 'topup_maximum_exceeded', `Maximum top-up is $${maxTopupUsd}`);
+      }
+      plan = {
+        key: `flex_${String(amountUsd).replace(/\./g, '_')}`,
+        amountUsd,
+        credits: creditsForUsd(amountUsd),
+        label: `$${amountUsd} = ${creditsForUsd(amountUsd)} credits`,
+        flexible: true
+      };
+    }
+
+    if (!plan) return fail(res, 400, 'bad_topup_plan', 'Choose a valid credit top-up plan or send a valid amountUsd');
+
     let paypalOrder;
     try {
       paypalOrder = await createPayPalOrder({ amountUsd: plan.amountUsd, customId: `${ctx.user.id}:${plan.key}:${Date.now()}` });
@@ -2836,13 +2862,14 @@ async function handleApi(req, res, url) {
       planKey: plan.key,
       amountUsd: plan.amountUsd,
       credits: plan.credits,
+      flexible: Boolean(plan.flexible),
       status: 'pending',
       approvalUrl,
       createdAt: now(),
       updatedAt: now()
     };
     ctx.db.payments.push(payment);
-    pushActivity(ctx.db, { userId: ctx.user.id, sessionId: ctx.session?.id, action: 'billing.paypal_order_created', entityType: 'payment', entityId: payment.id, summary: `PayPal top-up created: ${plan.credits} credits`, metadata: { amountUsd: plan.amountUsd, credits: plan.credits, paypalOrderId: paypalOrder.id }, req });
+    pushActivity(ctx.db, { userId: ctx.user.id, sessionId: ctx.session?.id, action: 'billing.paypal_order_created', entityType: 'payment', entityId: payment.id, summary: `PayPal top-up created: ${plan.credits} credits`, metadata: { amountUsd: plan.amountUsd, credits: plan.credits, paypalOrderId: paypalOrder.id, flexible: Boolean(plan.flexible) }, req });
     await saveDb(ctx.db);
     json(res, 200, { payment, paypalOrderId: paypalOrder.id, approvalUrl });
     return true;
