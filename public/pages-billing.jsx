@@ -140,17 +140,17 @@ function BillingPage({ p, navigate }) {
 
   return <PageFrame p={p} density={0.35}>
     {nav}
-    <div style={{ padding:"32px", maxWidth:1280, margin:"0 auto" }}>
+    <div style={{ padding:"32px", maxWidth:1480, margin:"0 auto" }}>
       <SectionHead p={p} code="// FINANCIAL_OPS" title="الفوترة والاشتراك" sub="اشحن الكريدتس واستخدمها في كل خدمات المنصة. 1 دولار = 10 كريدت." right={<CrunchBtn p={p} label="تحديث" onClick={load} />} />
       {err && <div style={{ marginBottom:12 }}><Toast p={p} type="error">{err}</Toast></div>}
       {msg && <div style={{ marginBottom:12 }}><Toast p={p} type="success">{msg}</Toast></div>}
 
-      <div style={{ display:"grid", gridTemplateColumns:"1.1fr .9fr", gap:16, marginBottom:16 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr", gap:16, marginBottom:16 }}>
         <Panel p={p} padding={26}>
           <Tag p={p}>TIERS_AVAILABLE</Tag>
           <h2 style={{ margin:"18px 0 6px", fontFamily:"'Bebas Neue', sans-serif", fontSize:54, color:p.fg, letterSpacing:".04em", lineHeight:1 }}>خطط الكريدت</h2>
           <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, marginBottom:18 }}>اختار رصيد تشغيل جاهز. دي مش تعقيد اشتراكات، دي كريدتس تستخدمها في كل المنصة.</div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:10 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4, minmax(240px, 1fr))", gap:18 }}>
             {BILLING_TIER_PLANS.map((plan) => <TierCard key={plan.key} p={p} plan={plan} busy={busyKey === plan.key} onBuy={() => buyPlan(plan.amountUsd, plan.key)} />)}
           </div>
         </Panel>
@@ -229,15 +229,17 @@ function BillingPublicNav({ p, navigate }) {
 
 function TierCard({ p, plan, busy, onBuy }) {
   const credits = Number(plan.amountUsd || 0) * 10;
-  return <div style={{ position:"relative", minHeight:170, background:p.bg0, border:`1px solid ${plan.active ? p.accent : p.border}`, padding:16, display:"flex", flexDirection:"column", justifyContent:"space-between", clipPath:"polygon(0 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%)" }}>
-    <div style={{ position:"absolute", top:0, left:0, width:36, height:2, background:p.accent }} />
-    {plan.active && <div style={{ position:"absolute", top:10, left:10, border:`1px solid ${p.accent2}`, color:p.accent2, fontFamily:"'Space Mono', monospace", fontSize:8, letterSpacing:".16em", padding:"4px 7px" }}>ACTIVE</div>}
+  return <div style={{ position:"relative", minHeight:240, background:p.bg0, border:`1px solid ${plan.active ? p.accent : p.border}`, padding:22, display:"flex", flexDirection:"column", justifyContent:"space-between", gap:18, clipPath:"polygon(0 0,100% 0,100% calc(100% - 16px),calc(100% - 16px) 100%,0 100%)" }}>
+    <div style={{ position:"absolute", top:0, left:0, width:44, height:2, background:p.accent }} />
     <div>
-      <div style={{ fontFamily:"'Space Mono', monospace", color:p.dim, fontSize:9, letterSpacing:".14em", textAlign:"right" }}>{plan.code}</div>
-      <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:25, color:p.fg, letterSpacing:".04em", marginTop:6, textAlign:"right" }}>{plan.name}</div>
-      <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:41, color:plan.active?p.accent:p.fg, letterSpacing:".04em", marginTop:4 }}>{billMoney(plan.amountUsd)}</div>
-      <div style={{ fontFamily:"'Space Mono', monospace", fontSize:10, color:p.accent2, letterSpacing:".08em" }}>CRED {credits.toLocaleString()}</div>
-      <div style={{ marginTop:8, fontFamily:"'Inter', sans-serif", fontSize:11, color:p.dim, lineHeight:1.5 }}>{plan.subtitle}</div>
+      <div style={{ minHeight:26, display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, marginBottom:10 }}>
+        {plan.active ? <span style={{ border:`1px solid ${p.accent2}`, color:p.accent2, fontFamily:"'Space Mono', monospace", fontSize:9, letterSpacing:".16em", padding:"5px 8px", whiteSpace:"nowrap" }}>ACTIVE</span> : <span />}
+        <span style={{ fontFamily:"'Space Mono', monospace", color:p.dim, fontSize:10, letterSpacing:".14em", whiteSpace:"nowrap" }}>{plan.code}</span>
+      </div>
+      <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:34, color:p.fg, letterSpacing:".04em", marginTop:4, textAlign:"right", lineHeight:1 }}>{plan.name}</div>
+      <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:52, color:plan.active?p.accent:p.fg, letterSpacing:".04em", marginTop:12, lineHeight:1 }}>{billMoney(plan.amountUsd)}</div>
+      <div style={{ marginTop:8, fontFamily:"'Space Mono', monospace", fontSize:12, color:p.accent2, letterSpacing:".08em" }}>CRED {credits.toLocaleString()}</div>
+      <div style={{ marginTop:14, fontFamily:"'Inter', sans-serif", fontSize:13, color:p.dim, lineHeight:1.7, minHeight:44 }}>{plan.subtitle}</div>
     </div>
     <CrunchBtn p={p} label={busy ? "جاري التحويل..." : "اختر"} solid={plan.active} full onClick={onBuy} disabled={busy} />
   </div>;
