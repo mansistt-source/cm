@@ -427,6 +427,8 @@ function normalizeDb(db) {
   db.activityLog ||= [];
   db.subscriptions ||= [];
   db.creditReservations ||= [];
+  db.opsPlans ||= [];
+  db.opsRuns ||= [];
   db.users = db.users.map((u) => ({
     sessionVersion: 0,
     twoFactorEnabled: false,
@@ -999,6 +1001,1262 @@ function routeMatch(pathname, pattern) {
   return params;
 }
 
+
+// --- STEP 22: Operational Minds Registry (configuration only, no paid model calls) ---
+const OPS_AGENT_REGISTRY = [
+  {
+    "id": "mission_director",
+    "module": "core",
+    "modelLane": "director",
+    "role": "Understands the user goal and selects the workflow.",
+    "skills": [
+      "readProject",
+      "buildContext",
+      "estimateCost",
+      "selectAgents"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "intent_classifier",
+    "module": "core",
+    "modelLane": "router",
+    "role": "Classifies the request into a workflow.",
+    "skills": [
+      "classifyIntent"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "context_builder",
+    "module": "core",
+    "modelLane": "long_context",
+    "role": "Builds compact project context for downstream agents.",
+    "skills": [
+      "readProject",
+      "readAssets",
+      "readReferences"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "workflow_router",
+    "module": "core",
+    "modelLane": "router",
+    "role": "Selects the minimum useful agent path.",
+    "skills": [
+      "selectWorkflow",
+      "estimateCost"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "clarification_agent",
+    "module": "core",
+    "modelLane": "director",
+    "role": "Asks only necessary missing-information questions.",
+    "skills": [
+      "buildQuestions"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "decision_button_agent",
+    "module": "core",
+    "modelLane": "director",
+    "role": "Creates context-aware decision buttons.",
+    "skills": [
+      "buildDecisionButtons"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "approval_gate_agent",
+    "module": "core",
+    "modelLane": "deterministic",
+    "role": "Blocks execution until payment, credits and approval are valid.",
+    "skills": [
+      "checkWallet",
+      "reserveCredits"
+    ],
+    "costLevel": "none",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "asset_inspector",
+    "module": "assets",
+    "modelLane": "multimodal",
+    "role": "Analyzes uploaded assets and reference sheets.",
+    "skills": [
+      "readAssets",
+      "analyzeImage"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "asset_classifier",
+    "module": "assets",
+    "modelLane": "router",
+    "role": "Classifies assets as character, product, tool, car, reference or location.",
+    "skills": [
+      "classifyAsset"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "mention_resolver",
+    "module": "assets",
+    "modelLane": "deterministic",
+    "role": "Resolves @char1, @tool1, @product1, @account1 mentions.",
+    "skills": [
+      "resolveMentions"
+    ],
+    "costLevel": "none",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "reference_librarian",
+    "module": "assets",
+    "modelLane": "long_context",
+    "role": "Retrieves relevant project references and skill notes.",
+    "skills": [
+      "readReferences",
+      "retrieveSkillDocs"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "brand_memory_agent",
+    "module": "assets",
+    "modelLane": "long_context",
+    "role": "Keeps project tone, decisions and brand constraints.",
+    "skills": [
+      "readProject",
+      "buildMemory"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "consistency_reference_agent",
+    "module": "assets",
+    "modelLane": "multimodal",
+    "role": "Maintains visual consistency references across outputs.",
+    "skills": [
+      "readAssets",
+      "analyzeImage"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "film_concept_agent",
+    "module": "film",
+    "modelLane": "creative",
+    "role": "Turns a film brief into an executable concept.",
+    "skills": [
+      "callCreativeModel",
+      "readAssets"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "style_interpreter",
+    "module": "film",
+    "modelLane": "creative",
+    "role": "Translates selected visual style into production rules.",
+    "skills": [
+      "callCreativeModel",
+      "retrieveSkillDocs"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "scene_planner_agent",
+    "module": "film",
+    "modelLane": "creative",
+    "role": "Splits a film into duration-aware scenes.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "storyboard_agent",
+    "module": "film",
+    "modelLane": "creative",
+    "role": "Creates storyboard with start/end frame instructions.",
+    "skills": [
+      "callCreativeModel",
+      "retrieveSkillDocs"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "start_end_frame_agent",
+    "module": "film",
+    "modelLane": "creative",
+    "role": "Builds start/end frame generation payloads.",
+    "skills": [
+      "callCreativeModel",
+      "readAssets"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "film_consistency_agent",
+    "module": "film",
+    "modelLane": "multimodal",
+    "role": "Checks scenes for character and object consistency.",
+    "skills": [
+      "analyzeImage",
+      "readAssets"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "higgsfield_prompt_agent",
+    "module": "film",
+    "modelLane": "creative",
+    "role": "Converts storyboard into Higgsfield-ready payloads.",
+    "skills": [
+      "callCreativeModel",
+      "submitHiggsfieldJob"
+    ],
+    "costLevel": "high",
+    "requiresPaidExecution": true,
+    "requiresApproval": true,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "film_assembly_planner",
+    "module": "film",
+    "modelLane": "creative",
+    "role": "Plans clip order, transitions and final assembly.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "documentary_mode_agent",
+    "module": "documentary",
+    "modelLane": "router",
+    "role": "Chooses manual or auto-think documentary mode.",
+    "skills": [
+      "classifyIntent"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "topic_generator_agent",
+    "module": "documentary",
+    "modelLane": "creative",
+    "role": "Generates viral documentary topic options.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "documentary_research_agent",
+    "module": "documentary",
+    "modelLane": "long_context",
+    "role": "Researches documentary facts, sources and gaps.",
+    "skills": [
+      "searchWeb",
+      "callLongContextModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": true,
+    "enabled": true
+  },
+  {
+    "id": "fact_assumption_splitter",
+    "module": "documentary",
+    "modelLane": "creative",
+    "role": "Separates facts from assumptions and uncertainties.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "script_architect",
+    "module": "documentary",
+    "modelLane": "creative",
+    "role": "Writes duration-aware documentary script structure.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "beat_splitter",
+    "module": "documentary",
+    "modelLane": "deterministic",
+    "role": "Splits script into timed beats.",
+    "skills": [
+      "createTaskGraph"
+    ],
+    "costLevel": "none",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "visual_beat_agent",
+    "module": "documentary",
+    "modelLane": "creative",
+    "role": "Creates visual prompts for each documentary beat.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "narration_agent",
+    "module": "documentary",
+    "modelLane": "creative",
+    "role": "Creates narration and voice direction.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "documentary_consistency_agent",
+    "module": "documentary",
+    "modelLane": "multimodal",
+    "role": "Checks visual continuity across documentary beats.",
+    "skills": [
+      "analyzeImage"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "business_understanding_agent",
+    "module": "marketing",
+    "modelLane": "creative",
+    "role": "Extracts product, market, offer, audience and constraints.",
+    "skills": [
+      "callCreativeModel",
+      "readReferences"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "audience_agent",
+    "module": "marketing",
+    "modelLane": "creative",
+    "role": "Defines audience segments and objections.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "reference_account_agent",
+    "module": "marketing",
+    "modelLane": "long_context",
+    "role": "Analyzes added TikTok/Instagram/YouTube reference accounts.",
+    "skills": [
+      "searchWeb",
+      "readReferences"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": true,
+    "enabled": true
+  },
+  {
+    "id": "market_research_agent",
+    "module": "marketing",
+    "modelLane": "long_context",
+    "role": "Researches the market, competitors and content gaps.",
+    "skills": [
+      "searchWeb",
+      "callLongContextModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": true,
+    "enabled": true
+  },
+  {
+    "id": "trend_discovery_agent",
+    "module": "marketing",
+    "modelLane": "long_context",
+    "role": "Finds relevant platform trends.",
+    "skills": [
+      "searchWeb"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": true,
+    "enabled": true
+  },
+  {
+    "id": "viral_pattern_agent",
+    "module": "marketing",
+    "modelLane": "creative",
+    "role": "Explains what makes examples go viral.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "failure_pattern_agent",
+    "module": "marketing",
+    "modelLane": "creative",
+    "role": "Explains weak content and what to avoid.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "creative_strategy_agent",
+    "module": "marketing",
+    "modelLane": "director",
+    "role": "Synthesizes market research into a strategy.",
+    "skills": [
+      "callDirectorModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "campaign_planner_agent",
+    "module": "marketing",
+    "modelLane": "creative",
+    "role": "Builds campaign map and jobs.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "ugc_expansion_agent",
+    "module": "marketing",
+    "modelLane": "creative",
+    "role": "Expands campaign into UGC video jobs.",
+    "skills": [
+      "callCreativeModel",
+      "retrieveSkillDocs"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "hook_writer_agent",
+    "module": "marketing",
+    "modelLane": "creative",
+    "role": "Writes platform-specific hooks.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "script_writer_agent",
+    "module": "marketing",
+    "modelLane": "creative",
+    "role": "Writes short platform scripts.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "caption_cta_agent",
+    "module": "marketing",
+    "modelLane": "creative",
+    "role": "Writes captions, hashtags and CTAs.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "service_conversation_agent",
+    "module": "service",
+    "modelLane": "director",
+    "role": "Maintains client-facing service conversation state.",
+    "skills": [
+      "callDirectorModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "tool_selection_agent",
+    "module": "service",
+    "modelLane": "router",
+    "role": "Selects platform tools for user goal.",
+    "skills": [
+      "selectTools"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "skill_planner_agent",
+    "module": "service",
+    "modelLane": "director",
+    "role": "Plans skill sequence for a workflow.",
+    "skills": [
+      "retrieveSkillDocs",
+      "callDirectorModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "user_goal_refiner",
+    "module": "service",
+    "modelLane": "creative",
+    "role": "Turns vague requests into clear production goals.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "cross_workflow_coordinator",
+    "module": "service",
+    "modelLane": "director",
+    "role": "Coordinates mixed workflows.",
+    "skills": [
+      "callDirectorModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "avatar_input_qa",
+    "module": "avatar",
+    "modelLane": "multimodal",
+    "role": "Checks avatar training photos.",
+    "skills": [
+      "analyzeImage"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "identity_lock_agent",
+    "module": "avatar",
+    "modelLane": "multimodal",
+    "role": "Builds identity lock instructions.",
+    "skills": [
+      "analyzeImage",
+      "readAssets"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "avatar_training_planner",
+    "module": "avatar",
+    "modelLane": "creative",
+    "role": "Plans avatar training settings.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "avatar_usage_agent",
+    "module": "avatar",
+    "modelLane": "creative",
+    "role": "Plans avatar usage in marketing/film workflows.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "avatar_safety_quality_agent",
+    "module": "avatar",
+    "modelLane": "multimodal",
+    "role": "Checks avatar output quality.",
+    "skills": [
+      "analyzeImage"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "task_graph_agent",
+    "module": "execution",
+    "modelLane": "deterministic",
+    "role": "Turns approved plan into executable jobs.",
+    "skills": [
+      "createTaskGraph"
+    ],
+    "costLevel": "none",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "cost_estimator_agent",
+    "module": "execution",
+    "modelLane": "deterministic",
+    "role": "Calculates dynamic estimate and reserve range.",
+    "skills": [
+      "estimateCost"
+    ],
+    "costLevel": "none",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "credit_reservation_agent",
+    "module": "execution",
+    "modelLane": "deterministic",
+    "role": "Reserves credits before execution.",
+    "skills": [
+      "reserveCredits"
+    ],
+    "costLevel": "none",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "provider_router_agent",
+    "module": "execution",
+    "modelLane": "router",
+    "role": "Chooses provider/model for each job.",
+    "skills": [
+      "selectProvider"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "job_dispatcher_agent",
+    "module": "execution",
+    "modelLane": "deterministic",
+    "role": "Dispatches approved paid jobs.",
+    "skills": [
+      "submitHiggsfieldJob"
+    ],
+    "costLevel": "execution",
+    "requiresPaidExecution": true,
+    "requiresApproval": true,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "progress_monitor_agent",
+    "module": "execution",
+    "modelLane": "deterministic",
+    "role": "Tracks job progress.",
+    "skills": [
+      "monitorJob"
+    ],
+    "costLevel": "none",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "recovery_agent",
+    "module": "execution",
+    "modelLane": "director",
+    "role": "Plans recovery for failed jobs.",
+    "skills": [
+      "callDirectorModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "retry_strategy_agent",
+    "module": "execution",
+    "modelLane": "creative",
+    "role": "Rewrites failed prompts/retry strategy.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "output_qa_agent",
+    "module": "qa",
+    "modelLane": "multimodal",
+    "role": "Reviews final outputs against brief.",
+    "skills": [
+      "runQA",
+      "analyzeImage"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "brand_safety_agent",
+    "module": "qa",
+    "modelLane": "creative",
+    "role": "Checks brand risk and content safety.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "consistency_qa_agent",
+    "module": "qa",
+    "modelLane": "multimodal",
+    "role": "Checks output consistency against references.",
+    "skills": [
+      "analyzeImage"
+    ],
+    "costLevel": "medium",
+    "requiresPaidExecution": true,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "delivery_packaging_agent",
+    "module": "qa",
+    "modelLane": "creative",
+    "role": "Packages deliverables and notes.",
+    "skills": [
+      "packageDelivery"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "client_summary_agent",
+    "module": "qa",
+    "modelLane": "creative",
+    "role": "Summarizes delivered work to client.",
+    "skills": [
+      "callCreativeModel"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  },
+  {
+    "id": "feedback_learning_agent",
+    "module": "qa",
+    "modelLane": "long_context",
+    "role": "Turns feedback into future project memory.",
+    "skills": [
+      "callLongContextModel"
+    ],
+    "costLevel": "low",
+    "requiresPaidExecution": false,
+    "requiresApproval": false,
+    "canUseInternet": false,
+    "enabled": true
+  }
+];
+const OPS_SKILL_REGISTRY = [
+  {
+    "id": "analyzeImage",
+    "costBucket": "api",
+    "enabled": true
+  },
+  {
+    "id": "buildContext",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "buildDecisionButtons",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "buildMemory",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "buildQuestions",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "callCreativeModel",
+    "costBucket": "api",
+    "enabled": true
+  },
+  {
+    "id": "callDirectorModel",
+    "costBucket": "api",
+    "enabled": true
+  },
+  {
+    "id": "callLongContextModel",
+    "costBucket": "api",
+    "enabled": true
+  },
+  {
+    "id": "checkWallet",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "classifyAsset",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "classifyIntent",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "createTaskGraph",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "estimateCost",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "monitorJob",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "packageDelivery",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "readAssets",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "readProject",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "readReferences",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "reserveCredits",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "resolveMentions",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "retrieveSkillDocs",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "runQA",
+    "costBucket": "api",
+    "enabled": true
+  },
+  {
+    "id": "searchWeb",
+    "costBucket": "api",
+    "enabled": true
+  },
+  {
+    "id": "selectAgents",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "selectProvider",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "selectTools",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "selectWorkflow",
+    "costBucket": "system",
+    "enabled": true
+  },
+  {
+    "id": "submitHiggsfieldJob",
+    "costBucket": "api",
+    "enabled": true
+  }
+];
+const OPS_WORKFLOW_TEMPLATES = {
+  "film_maker": [
+    "mission_director",
+    "context_builder",
+    "mention_resolver",
+    "film_concept_agent",
+    "style_interpreter",
+    "scene_planner_agent",
+    "storyboard_agent",
+    "start_end_frame_agent",
+    "higgsfield_prompt_agent",
+    "task_graph_agent",
+    "cost_estimator_agent",
+    "approval_gate_agent",
+    "job_dispatcher_agent",
+    "output_qa_agent",
+    "delivery_packaging_agent"
+  ],
+  "marketing_agent": [
+    "mission_director",
+    "context_builder",
+    "business_understanding_agent",
+    "audience_agent",
+    "reference_account_agent",
+    "market_research_agent",
+    "trend_discovery_agent",
+    "viral_pattern_agent",
+    "failure_pattern_agent",
+    "creative_strategy_agent",
+    "campaign_planner_agent",
+    "ugc_expansion_agent",
+    "hook_writer_agent",
+    "script_writer_agent",
+    "caption_cta_agent",
+    "task_graph_agent",
+    "cost_estimator_agent",
+    "approval_gate_agent",
+    "output_qa_agent",
+    "delivery_packaging_agent"
+  ],
+  "youtube_documentary": [
+    "mission_director",
+    "documentary_mode_agent",
+    "topic_generator_agent",
+    "documentary_research_agent",
+    "fact_assumption_splitter",
+    "script_architect",
+    "beat_splitter",
+    "visual_beat_agent",
+    "narration_agent",
+    "documentary_consistency_agent",
+    "task_graph_agent",
+    "cost_estimator_agent",
+    "approval_gate_agent",
+    "job_dispatcher_agent",
+    "output_qa_agent"
+  ],
+  "ugc_avatar": [
+    "mission_director",
+    "asset_inspector",
+    "avatar_input_qa",
+    "identity_lock_agent",
+    "avatar_training_planner",
+    "avatar_usage_agent",
+    "avatar_safety_quality_agent",
+    "task_graph_agent",
+    "cost_estimator_agent",
+    "approval_gate_agent"
+  ],
+  "service_agent": [
+    "mission_director",
+    "service_conversation_agent",
+    "user_goal_refiner",
+    "tool_selection_agent",
+    "skill_planner_agent",
+    "cross_workflow_coordinator",
+    "task_graph_agent",
+    "cost_estimator_agent"
+  ]
+};
+
+function opsAgent(id) { return OPS_AGENT_REGISTRY.find((a) => a.id === id) || null; }
+function opsWorkflowType(raw) {
+  const key = String(raw || 'service_agent').trim();
+  return OPS_WORKFLOW_TEMPLATES[key] ? key : 'service_agent';
+}
+function opsDefaultInput(project, body = {}) {
+  return {
+    operationType: opsWorkflowType(body.operationType || project.serviceType),
+    durationSeconds: Number(body.durationSeconds || project.durationSeconds || 15),
+    quality: String(body.quality || body.style || project.style || 'standard'),
+    agentLevel: String(body.agentLevel || 'normal'),
+    researchLevel: String(body.researchLevel || 'normal'),
+    videoCount: Number(body.videoCount || 1),
+    imageCount: Number(body.imageCount || 0),
+    voiceMinutes: Number(body.voiceMinutes || 0),
+    prompt: String(body.prompt || project.brief || ''),
+    style: String(body.style || project.style || ''),
+  };
+}
+function opsSuggestedSkills(agentIds) {
+  const set = new Set();
+  for (const id of agentIds || []) {
+    const agent = opsAgent(id);
+    for (const sk of agent?.skills || []) set.add(sk);
+  }
+  return [...set].map((id) => OPS_SKILL_REGISTRY.find((s) => s.id === id) || { id, enabled: true });
+}
+function buildOpsPlan({ project, body = {}, userId, estimate }) {
+  const workflowType = opsWorkflowType(body.operationType || project.serviceType);
+  const agentIds = OPS_WORKFLOW_TEMPLATES[workflowType] || OPS_WORKFLOW_TEMPLATES.service_agent;
+  const agents = agentIds.map(opsAgent).filter(Boolean);
+  const input = opsDefaultInput(project, body);
+  return {
+    id: id('ops_plan'),
+    userId,
+    projectId: project.id,
+    workflowType,
+    status: 'planned',
+    title: String(body.title || `Operational plan · ${workflowType}`).slice(0, 160),
+    input: sanitizeMeta(input),
+    estimate: sanitizeMeta(estimate),
+    agents: agents.map((a, i) => ({ step: i + 1, id: a.id, module: a.module, modelLane: a.modelLane, role: a.role, costLevel: a.costLevel, skills: a.skills })),
+    skills: opsSuggestedSkills(agentIds),
+    gates: { requiresCredits: true, requiresApproval: true, reserveBeforeExecution: true, chargeActualAndRefundUnused: true },
+    nextAction: 'reserve_credits_before_execution',
+    createdAt: now(),
+    updatedAt: now()
+  };
+}
+function opsRunFromPlan(plan, reservation) {
+  return {
+    id: id('ops_run'),
+    userId: plan.userId,
+    projectId: plan.projectId,
+    planId: plan.id,
+    reservationId: reservation?.id || null,
+    workflowType: plan.workflowType,
+    status: reservation ? 'reserved_waiting_manual_execution' : 'planned',
+    currentStep: 0,
+    steps: plan.agents.map((a) => ({ agentId: a.id, status: 'pending', module: a.module, modelLane: a.modelLane, costLevel: a.costLevel })),
+    createdAt: now(),
+    updatedAt: now()
+  };
+}
+// --- END STEP 22 ---
+
 async function handleApi(req, res, url) {
   const method = req.method || 'GET';
   const pathname = url.pathname;
@@ -1020,6 +2278,126 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+
+
+
+  if (method === 'GET' && pathname === '/api/ops/catalog') {
+    json(res, 200, {
+      modelLanes: ['director','router','long_context','creative','multimodal','deterministic','higgsfield_execution'],
+      agents: OPS_AGENT_REGISTRY,
+      skills: OPS_SKILL_REGISTRY,
+      workflows: OPS_WORKFLOW_TEMPLATES
+    });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/ops/agents') {
+    json(res, 200, { agents: OPS_AGENT_REGISTRY });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/ops/skills') {
+    json(res, 200, { skills: OPS_SKILL_REGISTRY });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/projects/:id/ops/plan');
+  if (params && method === 'POST') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const body = await readBody(req);
+    const project = ctx.db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const input = opsDefaultInput(project, body);
+    const estimate = estimateOperationCredits(input);
+    ctx.db.opsPlans ||= [];
+    const plan = buildOpsPlan({ project, body: input, userId: ctx.user.id, estimate });
+    ctx.db.opsPlans.push(plan);
+    pushActivity(ctx.db, { userId: ctx.user.id, sessionId: ctx.session?.id, action: 'ops.plan_created', entityType: 'project', entityId: project.id, summary: `Operational plan created: ${plan.workflowType}`, metadata: { planId: plan.id, requiredCredits: estimate.requiredCredits, agents: plan.agents.length }, req });
+    await saveDb(ctx.db);
+    json(res, 201, { plan });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/projects/:id/ops/plans');
+  if (params && method === 'GET') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const project = ctx.db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const plans = (ctx.db.opsPlans || []).filter((p) => p.projectId === project.id).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    json(res, 200, { plans });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/projects/:id/ops/reserve-start');
+  if (params && method === 'POST') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const body = await readBody(req);
+    const project = ctx.db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    let plan = null;
+    if (body.planId) plan = (ctx.db.opsPlans || []).find((p) => p.id === body.planId && p.projectId === project.id);
+    if (!plan) {
+      const input = opsDefaultInput(project, body);
+      const estimate = estimateOperationCredits(input);
+      ctx.db.opsPlans ||= [];
+      plan = buildOpsPlan({ project, body: input, userId: ctx.user.id, estimate });
+      ctx.db.opsPlans.push(plan);
+    }
+    try {
+      const reserved = reserveOperationCredits(ctx.db, { userId: ctx.user.id, projectId: project.id, estimate: plan.estimate, input: { operationType: plan.workflowType, planId: plan.id }, req, sessionId: ctx.session?.id });
+      plan.status = 'reserved';
+      plan.reservationId = reserved.reservation.id;
+      plan.updatedAt = now();
+      ctx.db.opsRuns ||= [];
+      const run = opsRunFromPlan(plan, reserved.reservation);
+      ctx.db.opsRuns.push(run);
+      pushActivity(ctx.db, { userId: ctx.user.id, sessionId: ctx.session?.id, action: 'ops.run_reserved', entityType: 'project', entityId: project.id, summary: `Operational run reserved: ${run.workflowType}`, metadata: { planId: plan.id, runId: run.id, reservationId: reserved.reservation.id, requiredCredits: plan.estimate.requiredCredits }, req });
+      await saveDb(ctx.db);
+      json(res, 201, { plan, run, reservation: reserved.reservation, wallet: publicWallet(reserved.wallet) });
+    } catch (e) {
+      if (e.code === 'insufficient_credits') return json(res, 402, { error: 'insufficient_credits', message: e.message, requiredCredits: e.requiredCredits, availableCredits: e.availableCredits, plan });
+      throw e;
+    }
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/projects/:id/ops/runs');
+  if (params && method === 'GET') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const project = ctx.db.projects.find((p) => p.id === params.id);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const runs = (ctx.db.opsRuns || []).filter((r) => r.projectId === project.id).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    json(res, 200, { runs });
+    return true;
+  }
+
+  params = routeMatch(pathname, '/api/ops/runs/:id/status');
+  if (params && method === 'PATCH') {
+    const ctx = await requireUserWithDb(req, res);
+    if (!ctx) return true;
+    const body = await readBody(req);
+    const run = (ctx.db.opsRuns || []).find((r) => r.id === params.id);
+    if (!run) return notFound(res);
+    const project = ctx.db.projects.find((p) => p.id === run.projectId);
+    if (!project) return notFound(res);
+    if (!assertProjectOwnerOrAdmin(ctx.user, project)) return fail(res, 403, 'forbidden', 'Not your project');
+    const status = String(body.status || '').trim();
+    const allowed = new Set(['reserved_waiting_manual_execution','running','qa','delivered','failed','cancelled']);
+    if (!allowed.has(status)) return fail(res, 400, 'bad_status', 'Invalid ops run status');
+    run.status = status;
+    run.updatedAt = now();
+    await saveDb(ctx.db);
+    json(res, 200, { run });
+    return true;
+  }
 
   if (method === 'GET' && pathname === '/api/billing/plans') {
     json(res, 200, {
