@@ -640,12 +640,12 @@ function Footer({ p }) {
           {[
             { t: "المنتج", links: ["كيف يعمل", "الأنماط", "الباقات", "الدفع المرن", "API"] },
             { t: "الشركة", links: ["عنّا", "اتصل بنا", "الوظائف", "المدوّنة", "الصحافة"] },
-            { t: "قانوني", links: ["الشروط", "الخصوصية", "الكوكيز", "DMCA"] },
+            { t: "قانوني", links: ["الشروط", "الخصوصية", "إيقاف التجديد التلقائي", "الكوكيز", "DMCA"] },
           ].map((col, i) => (
             <div key={i}>
               <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, color: p.accent, letterSpacing: ".25em", marginBottom: 14, textTransform: "uppercase" }}>// {col.t}</div>
               {col.links.map((l, j) => (
-                <div key={j} style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: p.dim, marginBottom: 8, cursor: "pointer" }} dir="rtl">↳ {l}</div>
+                <div key={j} onClick={() => l === "إيقاف التجديد التلقائي" ? cmGoBilling() : null} style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: l === "إيقاف التجديد التلقائي" ? p.accent : p.dim, marginBottom: 8, cursor: "pointer" }} dir="rtl">↳ {l}</div>
               ))}
             </div>
           ))}
