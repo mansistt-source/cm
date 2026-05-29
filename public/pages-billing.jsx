@@ -41,6 +41,7 @@ function BillingPage({ p, navigate }) {
   const [plans, setPlans] = React.useState([]);
   const [ledger, setLedger] = React.useState([]);
   const [subscriptions, setSubscriptions] = React.useState([]);
+  const [autoRenewal, setAutoRenewal] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [busyKey, setBusyKey] = React.useState("");
   const [confirmRenewal, setConfirmRenewal] = React.useState(null);
@@ -56,21 +57,24 @@ function BillingPage({ p, navigate }) {
       setPlans(bp.plans || []);
 
       if (billToken()) {
-        const [me, w, led, subs] = await Promise.all([
+        const [me, w, led, subs, auto] = await Promise.all([
           billApi("/api/auth/me"),
           billApi("/api/me/wallet"),
           billApi("/api/me/credits/ledger?limit=12"),
-          billApi("/api/me/subscriptions")
+          billApi("/api/me/subscriptions"),
+          billApi("/api/me/auto-renewal")
         ]);
         if (me.user) { setUser(me.user); localStorage.setItem("cm_user", JSON.stringify(me.user)); }
         setWallet(w.wallet || null);
         setLedger(led.ledger || []);
         setSubscriptions(subs.subscriptions || []);
+        setAutoRenewal(auto.autoRenewal || null);
         window.dispatchEvent(new Event("cm-wallet-changed"));
       } else {
         setWallet(null);
         setLedger([]);
         setSubscriptions([]);
+        setAutoRenewal(null);
       }
     } catch(e) { setErr(e.message || "فشل تحميل الفوترة"); }
     finally { setLoading(false); }
@@ -141,29 +145,45 @@ function BillingPage({ p, navigate }) {
     setErr(""); setMsg("");
     if (!billToken()) return requireLogin({ action: enabled ? "enable_auto_renewal" : "disable_auto_renewal" });
     if (!subscription?.id) return setErr("لم يتم العثور على رقم الاشتراك");
-    setConfirmRenewal({ subscription, enabled });
+    setConfirmRenewal({ subscription, enabled, scope:"subscription" });
+  }
+
+  function requestAccountAutoRenewalChange(enabled) {
+    setErr(""); setMsg("");
+    if (!billToken()) return requireLogin({ action: enabled ? "enable_account_auto_renewal" : "disable_account_auto_renewal" });
+    setConfirmRenewal({ subscription:null, enabled, scope:"account" });
   }
 
   async function submitAutoRenewalChange() {
     const action = confirmRenewal;
-    if (!action?.subscription?.id) return;
-    const subscriptionId = action.subscription.id;
+    if (!action) return;
     const enabled = Boolean(action.enabled);
-    const busyId = `auto_${subscriptionId}`;
+    const accountScope = action.scope === "account";
+    const subscriptionId = action.subscription?.id;
+    const busyId = accountScope ? "auto_account" : `auto_${subscriptionId}`;
+    if (!accountScope && !subscriptionId) return;
     setBusyKey(busyId);
     setErr(""); setMsg("");
     try {
-      const data = await billApi(`/api/me/subscriptions/${encodeURIComponent(subscriptionId)}/auto-renew`, {
-        method:"POST",
-        body: JSON.stringify({ enabled })
-      });
+      const data = accountScope
+        ? await billApi("/api/me/auto-renewal", { method:"POST", body: JSON.stringify({ enabled }) })
+        : await billApi(`/api/me/subscriptions/${encodeURIComponent(subscriptionId)}/auto-renew`, { method:"POST", body: JSON.stringify({ enabled }) });
+
+      if (data.autoRenewal) setAutoRenewal(data.autoRenewal);
       if (data.subscription) {
         setSubscriptions((items) => items.map((item) => item.id === data.subscription.id ? data.subscription : item));
       }
+      if (Array.isArray(data.subscriptions)) {
+        setSubscriptions((items) => {
+          const byId = new Map(items.map((item) => [item.id, item]));
+          data.subscriptions.forEach((item) => byId.set(item.id, item));
+          return Array.from(byId.values());
+        });
+      }
       setConfirmRenewal(null);
       setMsg(enabled
-        ? "تم تفعيل التجديد التلقائي لهذا الاشتراك."
-        : "تم إيقاف التجديد التلقائي. سيظل اشتراكك فعالًا حتى نهاية الفترة الحالية."
+        ? "تم تفعيل التجديد التلقائي وحفظ الحالة في قاعدة البيانات."
+        : "تم إيقاف التجديد التلقائي وحفظ الحالة في قاعدة البيانات. سيظل الوصول الحالي والرصيد كما هما."
       );
       await load();
     } catch(e) { setErr(e.message || (enabled ? "فشل تفعيل التجديد التلقائي" : "فشل إيقاف التجديد التلقائي")); }
@@ -250,7 +270,8 @@ function BillingPage({ p, navigate }) {
           <CrunchBtn p={p} label="تحديث الاشتراكات" onClick={load} />
         </div>
         <div style={{ marginTop:16, display:"grid", gap:10 }}>
-          {!subscriptions.length && <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13 }} dir="rtl">لا توجد اشتراكات محفوظة على حسابك حاليًا.</div>}
+          <AccountAutoRenewalRow p={p} autoRenewal={autoRenewal} busy={busyKey === "auto_account"} onRequestChange={requestAccountAutoRenewalChange} />
+          {!subscriptions.length && <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.8 }} dir="rtl">لا توجد اشتراكات محفوظة على حسابك حاليًا، لكن حالة التجديد التلقائي العامة محفوظة في قاعدة البيانات وسيتم تطبيقها على أي اشتراك قادم.</div>}
           {subscriptions.map((sub) => <SubscriptionRenewalRow key={sub.id} p={p} subscription={sub} busy={busyKey === `auto_${sub.id}`} onRequestChange={(enabled) => requestAutoRenewalChange(sub, enabled)} />)}
         </div>
       </Panel>}
@@ -259,7 +280,7 @@ function BillingPage({ p, navigate }) {
         p={p}
         subscription={confirmRenewal.subscription}
         enabled={confirmRenewal.enabled}
-        busy={busyKey === `auto_${confirmRenewal.subscription?.id}`}
+        busy={busyKey === (confirmRenewal.scope === "account" ? "auto_account" : `auto_${confirmRenewal.subscription?.id}`)}
         onCancel={() => busyKey ? null : setConfirmRenewal(null)}
         onConfirm={submitAutoRenewalChange}
       />}
@@ -309,6 +330,30 @@ function TierCard({ p, plan, busy, onBuy }) {
   </div>;
 }
 
+function AccountAutoRenewalRow({ p, autoRenewal, busy, onRequestChange }) {
+  const enabled = autoRenewal?.autoRenewEnabled !== false;
+  const nextEnabled = !enabled;
+  return <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:14, alignItems:"center", background:p.bg0, border:`1px solid ${enabled ? p.accent2 : p.warn}`, padding:18, clipPath:"polygon(0 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%)" }}>
+    <div>
+      <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+        <div style={{ width:12, height:12, border:`1px solid ${enabled ? p.accent2 : p.warn}`, background:enabled?p.accent2:"transparent", boxShadow:enabled?`0 0 18px ${p.accent2}`:"none" }} />
+        <div style={{ fontFamily:"'Bebas Neue', sans-serif", color:p.fg, fontSize:28, letterSpacing:".05em" }}>إعداد الحساب العام</div>
+        <span style={{ fontFamily:"'Space Mono', monospace", color:p.dim, fontSize:9, letterSpacing:".12em" }}>DATABASE_STATE</span>
+      </div>
+      <div style={{ marginTop:8, color:enabled?p.accent2:p.warn, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.8 }} dir="rtl">
+        {enabled
+          ? "التجديد التلقائي مفعّل. سيتم حفظ هذا الاختيار للحساب وتطبيقه على الاشتراكات الحالية والقادمة."
+          : "التجديد التلقائي متوقف. سيتم حفظ هذا الاختيار للحساب ولن يتم تفعيل التلقائية لأي اشتراك قادم إلا بعد تفعيلها."}
+      </div>
+      <div style={{ marginTop:4, color:p.dim, fontFamily:"'Space Mono', monospace", fontSize:9, letterSpacing:".08em" }}>UPDATED_AT · {autoRenewal?.updatedAt || "غير محدد"}</div>
+    </div>
+    <div style={{ display:"grid", gap:8, minWidth:190 }}>
+      <CrunchBtn p={p} label={busy ? "جارٍ الحفظ..." : (enabled ? "إيقاف التلقائية" : "تفعيل التلقائية")} solid={!enabled} onClick={() => onRequestChange(nextEnabled)} disabled={busy} />
+      <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:11, lineHeight:1.5, textAlign:"right" }} dir="rtl">سيظهر فورم تأكيد قبل الحفظ.</div>
+    </div>
+  </div>;
+}
+
 function subscriptionAutoRenewEnabled(subscription) {
   if (!subscription) return false;
   const status = String(subscription.status || "").toLowerCase();
@@ -339,16 +384,17 @@ function SubscriptionRenewalRow({ p, subscription, busy, onRequestChange }) {
 }
 
 function AutoRenewConfirmDialog({ p, subscription, enabled, busy, onCancel, onConfirm }) {
-  const label = subscription?.packageKey || subscription?.planKey || subscription?.source || "subscription";
+  const accountScope = !subscription?.id;
+  const label = accountScope ? "إعداد الحساب العام" : (subscription?.packageKey || subscription?.planKey || subscription?.source || "subscription");
   return <div style={{ position:"fixed", inset:0, zIndex:1000, background:"rgba(0,0,0,.72)", backdropFilter:"blur(8px)", display:"grid", placeItems:"center", padding:20 }}>
     <div dir="rtl" style={{ width:"min(560px, 100%)", background:p.bg1, border:`1px solid ${enabled ? p.accent2 : p.warn}`, padding:24, boxShadow:"0 24px 80px rgba(0,0,0,.45)", clipPath:"polygon(0 0,100% 0,100% calc(100% - 18px),calc(100% - 18px) 100%,0 100%)" }}>
       <Tag p={p} color={enabled ? p.accent2 : p.warn}>تأكيد التغيير</Tag>
       <h3 style={{ margin:"16px 0 8px", color:p.fg, fontFamily:"'Bebas Neue', sans-serif", fontSize:34, letterSpacing:".04em", lineHeight:1 }}>{enabled ? "تفعيل التجديد التلقائي؟" : "إيقاف التجديد التلقائي؟"}</h3>
       <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:14, lineHeight:1.9 }}>
-        سيتم حفظ الحالة الجديدة في قاعدة البيانات للاشتراك: <span style={{ color:p.fg }}>{label}</span>.
+        سيتم حفظ الحالة الجديدة في قاعدة البيانات لـ <span style={{ color:p.fg }}>{label}</span>.
         {enabled
-          ? " بعد التأكيد سيظهر الاشتراك كتجديد تلقائي مفعّل."
-          : " بعد التأكيد لن يتم تجديد الاشتراك تلقائيًا، وسيظل الوصول الحالي والرصيد كما هما حتى نهاية الفترة المدفوعة."}
+          ? (accountScope ? " بعد التأكيد سيتم تفعيل التلقائية للحساب وتطبيقها على الاشتراكات الحالية والقادمة." : " بعد التأكيد سيظهر الاشتراك كتجديد تلقائي مفعّل.")
+          : (accountScope ? " بعد التأكيد سيتم إيقاف التلقائية للحساب وتطبيقها على الاشتراكات الحالية والقادمة. لن يتم حذف الرصيد أو إيقاف الوصول الحالي." : " بعد التأكيد لن يتم تجديد الاشتراك تلقائيًا، وسيظل الوصول الحالي والرصيد كما هما حتى نهاية الفترة المدفوعة.")}
       </div>
       <div style={{ marginTop:18, display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
         <CrunchBtn p={p} label="رجوع" onClick={onCancel} disabled={busy} />
