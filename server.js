@@ -410,7 +410,7 @@ async function ensureData() {
   try {
     await stat(DB_FILE);
   } catch {
-    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [], sessions: [], twoFactorCodes: [], wallets: [], creditLedger: [], activityLog: [], subscriptions: [], billingEvents: [], creditReservations: [] }, null, 2));
+    await writeFile(DB_FILE, JSON.stringify({ users: [], projects: [], files: [], payments: [], deliverables: [], sessions: [], twoFactorCodes: [], wallets: [], creditLedger: [], activityLog: [], subscriptions: [], creditReservations: [], billingEvents: [] }, null, 2));
   }
 }
 
@@ -426,8 +426,8 @@ function normalizeDb(db) {
   db.creditLedger ||= [];
   db.activityLog ||= [];
   db.subscriptions ||= [];
-  db.billingEvents ||= [];
   db.creditReservations ||= [];
+  db.billingEvents ||= [];
   db.opsPlans ||= [];
   db.opsRuns ||= [];
   db.users = db.users.map((u) => ({
@@ -728,6 +728,22 @@ async function capturePayPalOrder(paypalOrderId) {
   return data;
 }
 
+async function cancelPayPalSubscription(paypalSubscriptionId, reason = 'User disabled automatic renewal') {
+  const cleanId = String(paypalSubscriptionId || '').trim();
+  if (!cleanId) return { skipped: true, reason: 'missing_paypal_subscription_id' };
+  const token = await paypalAccessToken();
+  const response = await fetch(`${paypalApiBase()}/v1/billing/subscriptions/${encodeURIComponent(cleanId)}/cancel`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: String(reason || 'User disabled automatic renewal').slice(0, 120) })
+  });
+  const text = await response.text().catch(() => '');
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!response.ok && response.status !== 204) throw new Error(`PayPal subscription cancel failed: ${JSON.stringify(data)}`);
+  return { ok: true, status: response.status, data };
+}
+
 function extractCapturedUsd(captureData) {
   const captures = captureData?.purchase_units?.flatMap((u) => u?.payments?.captures || []) || [];
   const completed = captures.find((c) => c.status === 'COMPLETED') || captures[0];
@@ -736,60 +752,6 @@ function extractCapturedUsd(captureData) {
     status: completed?.status || captureData?.status || '',
     amountUsd: Number(completed?.amount?.value || 0)
   };
-}
-
-
-async function cancelPayPalSubscription(paypalSubscriptionId, reason = 'Customer requested auto-renewal cancellation from Content Machine billing settings') {
-  const subId = String(paypalSubscriptionId || '').trim();
-  if (!subId) return { skipped: true, reason: 'missing_paypal_subscription_id' };
-  const token = await paypalAccessToken();
-  const response = await fetch(`${paypalApiBase()}/v1/billing/subscriptions/${encodeURIComponent(subId)}/cancel`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason: String(reason || 'Customer requested auto-renewal cancellation').slice(0, 127) })
-  });
-  if (response.status === 204) return { ok: true, paypalSubscriptionId: subId };
-  const data = await response.json().catch(async () => ({ raw: await response.text().catch(() => '') }));
-  const paypalIssue = data?.details?.[0]?.issue || data?.name || '';
-  if (response.status === 404 || response.status === 422 || /already|cancel/i.test(String(paypalIssue))) {
-    return { ok: true, alreadyInactive: true, paypalSubscriptionId: subId, paypalResponse: data };
-  }
-  const error = new Error(`PayPal subscription cancel failed: ${JSON.stringify(data)}`);
-  error.status = response.status;
-  error.paypalResponse = data;
-  throw error;
-}
-
-function subscriptionPeriodEnd(subscription = {}) {
-  return subscription.currentPeriodEnd || subscription.renewsAt || subscription.expiresAt || subscription.cancelEffectiveAt || null;
-}
-
-function subscriptionAutoRenewEnabled(subscription = {}) {
-  const status = String(subscription.status || 'active').toLowerCase();
-  if (['cancelled', 'canceled', 'expired', 'inactive'].includes(status)) return false;
-  if (subscription.cancelAtPeriodEnd === true || subscription.cancel_at_period_end === true) return false;
-  if (subscription.autoRenewEnabled === false || subscription.autoRenew === false) return false;
-  return true;
-}
-
-function publicSubscription(subscription = {}) {
-  const periodEnd = subscriptionPeriodEnd(subscription);
-  const autoRenewEnabled = subscriptionAutoRenewEnabled(subscription);
-  return {
-    ...subscription,
-    autoRenewEnabled,
-    autoRenew: autoRenewEnabled,
-    cancelAtPeriodEnd: Boolean(subscription.cancelAtPeriodEnd === true || subscription.cancel_at_period_end === true),
-    currentPeriodEnd: periodEnd,
-    renewsAt: subscription.renewsAt || periodEnd
-  };
-}
-
-function findUserActiveSubscription(db, userId) {
-  const activeStatuses = new Set(['active', 'trialing', 'non_renewing']);
-  return (db.subscriptions || [])
-    .filter((s) => s.userId === userId && activeStatuses.has(String(s.status || 'active').toLowerCase()))
-    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0] || null;
 }
 
 function estimateOperationCredits(input = {}) {
@@ -2915,6 +2877,152 @@ function opsBuildProjectMindPreview({ project, body, wallet }) {
 }
 // --- END STEP 26 ---
 
+
+function normalizeBooleanIntent(value, fallback = null) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const clean = String(value ?? '').trim().toLowerCase();
+  if (['true', '1', 'yes', 'on', 'enable', 'enabled'].includes(clean)) return true;
+  if (['false', '0', 'no', 'off', 'disable', 'disabled'].includes(clean)) return false;
+  return fallback;
+}
+
+function isSubscriptionUsableForAutoRenew(subscription) {
+  if (!subscription) return false;
+  const status = String(subscription.status || '').toLowerCase();
+  return !['cancelled', 'canceled', 'expired', 'failed', 'inactive'].includes(status);
+}
+
+function subscriptionPeriodEnd(subscription) {
+  return subscription?.currentPeriodEnd || subscription?.cancelEffectiveAt || subscription?.renewsAt || subscription?.expiresAt || null;
+}
+
+function normalizeSubscriptionAutoRenewFields(subscription) {
+  if (!subscription) return subscription;
+  if (subscription.autoRenewEnabled === undefined) subscription.autoRenewEnabled = subscription.autoRenew !== false && subscription.cancelAtPeriodEnd !== true;
+  if (subscription.autoRenew === undefined) subscription.autoRenew = subscription.autoRenewEnabled !== false;
+  if (subscription.cancelAtPeriodEnd === undefined) subscription.cancelAtPeriodEnd = subscription.autoRenewEnabled === false;
+  return subscription;
+}
+
+function publicSubscriptionState(subscription) {
+  normalizeSubscriptionAutoRenewFields(subscription);
+  return {
+    ...subscription,
+    autoRenewEnabled: subscription.autoRenewEnabled !== false,
+    autoRenew: subscription.autoRenew !== false,
+    cancelAtPeriodEnd: subscription.cancelAtPeriodEnd === true,
+    currentPeriodEnd: subscriptionPeriodEnd(subscription),
+    periodEnd: subscriptionPeriodEnd(subscription)
+  };
+}
+
+function pushBillingEvent(db, { userId, subscriptionId = null, eventType, metadata = {}, req = null }) {
+  db.billingEvents ||= [];
+  const event = {
+    id: id('billing_event'),
+    userId,
+    subscriptionId,
+    eventType,
+    metadata: sanitizeMeta(metadata),
+    ip: req ? clientIp(req) : '',
+    userAgent: req ? String(req.headers['user-agent'] || '') : '',
+    createdAt: now()
+  };
+  db.billingEvents.push(event);
+  return event;
+}
+
+async function handleSubscriptionAutoRenewToggle(req, res, { subscriptionId, enabled, source = 'billing_page' }) {
+  const ctx = await requireUserWithDb(req, res);
+  if (!ctx) return true;
+
+  const body = await readBody(req).catch(() => ({}));
+  const nextEnabled = normalizeBooleanIntent(enabled, normalizeBooleanIntent(body.enabled, null));
+  if (nextEnabled === null) return fail(res, 400, 'auto_renew_state_required', 'Auto-renew state is required');
+
+  const db = ctx.db;
+  db.subscriptions ||= [];
+  db.billingEvents ||= [];
+
+  const subscription = db.subscriptions.find((s) => s.id === subscriptionId && s.userId === ctx.user.id);
+  if (!subscription) return fail(res, 404, 'subscription_not_found', 'Subscription not found');
+  if (!isSubscriptionUsableForAutoRenew(subscription)) return fail(res, 409, 'subscription_not_active', 'Subscription is not active');
+
+  normalizeSubscriptionAutoRenewFields(subscription);
+  const wasEnabled = subscription.autoRenewEnabled !== false && subscription.cancelAtPeriodEnd !== true;
+  const periodEnd = subscriptionPeriodEnd(subscription);
+  let providerAction = { skipped: true, reason: 'no_provider_subscription' };
+  let providerError = null;
+
+  if (nextEnabled === false && wasEnabled && subscription.paypalSubscriptionId) {
+    try {
+      providerAction = await cancelPayPalSubscription(subscription.paypalSubscriptionId, 'User disabled automatic renewal from billing page');
+      subscription.paypalAutoRenewCancelRequestedAt = now();
+    } catch (error) {
+      providerError = error.message || String(error);
+      subscription.paypalAutoRenewCancelError = providerError;
+    }
+  }
+
+  if (nextEnabled) {
+    subscription.autoRenewEnabled = true;
+    subscription.autoRenew = true;
+    subscription.cancelAtPeriodEnd = false;
+    subscription.autoRenewEnabledAt = now();
+    subscription.autoRenewEnabledBy = ctx.user.id;
+    subscription.autoRenewDisabledAt = null;
+    subscription.autoRenewDisabledBy = null;
+    subscription.cancelEffectiveAt = null;
+  } else {
+    subscription.autoRenewEnabled = false;
+    subscription.autoRenew = false;
+    subscription.cancelAtPeriodEnd = true;
+    subscription.autoRenewDisabledAt = now();
+    subscription.autoRenewDisabledBy = ctx.user.id;
+    subscription.cancelEffectiveAt = periodEnd;
+  }
+
+  subscription.updatedAt = now();
+
+  const eventType = nextEnabled ? 'subscription.auto_renew_enabled' : 'subscription.auto_renew_disabled';
+  pushBillingEvent(db, {
+    userId: ctx.user.id,
+    subscriptionId: subscription.id,
+    eventType,
+    metadata: {
+      source,
+      previousAutoRenewEnabled: wasEnabled,
+      nextAutoRenewEnabled: nextEnabled,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      periodEnd,
+      provider: subscription.paypalSubscriptionId ? 'paypal' : 'internal',
+      paypalSubscriptionId: subscription.paypalSubscriptionId || null,
+      providerAction,
+      providerError
+    },
+    req
+  });
+  pushActivity(db, {
+    userId: ctx.user.id,
+    sessionId: ctx.session?.id,
+    action: eventType,
+    entityType: 'subscription',
+    entityId: subscription.id,
+    summary: nextEnabled ? 'Automatic renewal enabled' : 'Automatic renewal disabled',
+    metadata: { cancelAtPeriodEnd: subscription.cancelAtPeriodEnd, periodEnd, providerError },
+    req
+  });
+
+  await saveDb(db);
+  json(res, 200, {
+    success: true,
+    subscription: publicSubscriptionState(subscription),
+    providerWarning: providerError ? 'Provider cancellation failed; internal state was saved. Review PayPal manually if needed.' : null
+  });
+  return true;
+}
+
 async function handleApi(req, res, url) {
   const method = req.method || 'GET';
   const pathname = url.pathname;
@@ -3675,76 +3783,25 @@ async function handleApi(req, res, url) {
     if (!ctx) return true;
     const subscriptions = (ctx.db.subscriptions || [])
       .filter((s) => s.userId === ctx.user.id)
-      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
-      .map(publicSubscription);
+      .map(publicSubscriptionState)
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
     json(res, 200, { subscriptions });
     return true;
   }
 
-  if (method === 'POST' && pathname === '/api/billing/subscription/disable-auto-renew') {
-    const ctx = await requireUserWithDb(req, res);
-    if (!ctx) return true;
-    const body = await readBody(req);
-    ctx.db.subscriptions ||= [];
-    ctx.db.billingEvents ||= [];
+  params = routeMatch(pathname, '/api/me/subscriptions/:id/auto-renew');
+  if (params && method === 'POST') {
+    return handleSubscriptionAutoRenewToggle(req, res, { subscriptionId: params.id, source: 'billing_page_toggle' });
+  }
 
-    const subscription = findUserActiveSubscription(ctx.db, ctx.user.id);
-    if (!subscription) {
-      return fail(res, 404, 'no_active_subscription', 'No active subscription found for this account');
-    }
+  params = routeMatch(pathname, '/api/me/subscriptions/:id/cancel-auto-renewal');
+  if (params && method === 'POST') {
+    return handleSubscriptionAutoRenewToggle(req, res, { subscriptionId: params.id, enabled: false, source: 'legacy_cancel_endpoint' });
+  }
 
-    const alreadyDisabled = !subscriptionAutoRenewEnabled(subscription) || subscription.cancelAtPeriodEnd === true;
-    const providerSubscriptionId = subscription.paypalSubscriptionId || subscription.providerSubscriptionId || subscription.providerSubId || '';
-    let paypalResult = null;
-
-    if (!alreadyDisabled && providerSubscriptionId) {
-      try {
-        paypalResult = await cancelPayPalSubscription(providerSubscriptionId, body.reason || 'Customer requested auto-renewal cancellation');
-      } catch (error) {
-        return fail(res, 502, 'paypal_cancel_failed', error.message || 'Could not disable PayPal auto-renewal');
-      }
-    }
-
-    const disabledAt = subscription.autoRenewDisabledAt || now();
-    subscription.autoRenewEnabled = false;
-    subscription.autoRenew = false;
-    subscription.cancelAtPeriodEnd = true;
-    subscription.autoRenewDisabledAt = disabledAt;
-    subscription.autoRenewDisabledBy = ctx.user.id;
-    subscription.cancelReason = String(body.reason || 'user_requested_auto_renewal_disabled').slice(0, 180);
-    subscription.cancelEffectiveAt = subscriptionPeriodEnd(subscription) || subscription.cancelEffectiveAt || null;
-    subscription.updatedAt = now();
-
-    const event = {
-      id: id('billing_event'),
-      userId: ctx.user.id,
-      subscriptionId: subscription.id,
-      eventType: 'subscription.auto_renew_disabled',
-      metadata: sanitizeMeta({
-        source: 'billing_page',
-        provider: providerSubscriptionId ? 'paypal' : 'internal',
-        providerSubscriptionId,
-        alreadyDisabled,
-        paypalResult
-      }),
-      createdAt: now()
-    };
-    ctx.db.billingEvents.push(event);
-
-    pushActivity(ctx.db, {
-      userId: ctx.user.id,
-      sessionId: ctx.session?.id,
-      action: 'subscription.auto_renew_disabled',
-      entityType: 'subscription',
-      entityId: subscription.id,
-      summary: 'Auto-renewal disabled; access remains active until the current period ends',
-      metadata: event.metadata,
-      req
-    });
-
-    await saveDb(ctx.db);
-    json(res, 200, { success: true, subscription: publicSubscription(subscription), event });
-    return true;
+  params = routeMatch(pathname, '/api/me/subscriptions/:id/enable-auto-renewal');
+  if (params && method === 'POST') {
+    return handleSubscriptionAutoRenewToggle(req, res, { subscriptionId: params.id, enabled: true, source: 'legacy_enable_endpoint' });
   }
 
   if (method === 'POST' && pathname === '/api/auth/logout') {
@@ -4304,14 +4361,12 @@ async function handleApi(req, res, url) {
       project.creditsAdded = creditsAdded;
     }
     db.subscriptions ||= [];
-  db.billingEvents ||= [];
   db.creditReservations ||= [];
     if (project.packageKey) {
       db.subscriptions.push({
         id: id('subscription'), userId: project.userId, projectId: project.id, packageKey: project.packageKey,
         amountUsd: project.priceUsd, status: 'active', source: 'manual_admin_payment', paymentId: paidPayment.id,
-        autoRenewEnabled: true, autoRenew: true, cancelAtPeriodEnd: false,
-        currentPeriodStart: now(), currentPeriodEnd: null, renewsAt: null,
+        autoRenewEnabled: true, autoRenew: true, cancelAtPeriodEnd: false, renewsAt: project.renewsAt || null, currentPeriodEnd: project.renewsAt || null,
         createdAt: now(), updatedAt: now()
       });
     }
