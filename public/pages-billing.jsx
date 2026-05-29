@@ -138,21 +138,21 @@ function BillingPage({ p, navigate }) {
 
   async function cancelAutoRenewal(subscriptionId) {
     setErr(""); setMsg("");
-    if (!billToken()) return requireLogin({ action:"cancel_auto_renewal" });
-    if (!subscriptionId) return setErr("لم يتم العثور على رقم الاشتراك");
-    const ok = window.confirm("إيقاف التجديد التلقائي؟ سيظل الاشتراك/الرصيد الحالي كما هو، لكن لن يتم تجديده تلقائيًا.");
+    if (!billToken()) return requireLogin({ action:"disable_auto_renewal" });
+    if (!subscriptionId) return setErr("لم يتم العثور على اشتراك نشط على حسابك");
+    const ok = window.confirm("سيظل اشتراكك فعالًا حتى نهاية الفترة الحالية، ولن يتم تجديده تلقائيًا بعدها. هل تريد إيقاف التجديد التلقائي؟");
     if (!ok) return;
     const busyId = `cancel_${subscriptionId}`;
     setBusyKey(busyId);
     try {
-      const data = await billApi(`/api/me/subscriptions/${encodeURIComponent(subscriptionId)}/cancel-auto-renewal`, {
+      const data = await billApi("/api/billing/subscription/disable-auto-renew", {
         method:"POST",
-        body: JSON.stringify({ reason:"user_requested_from_billing_footer" })
+        body: JSON.stringify({ reason:"user_requested_auto_renewal_disabled" })
       });
       if (data.subscription) {
         setSubscriptions((items) => items.map((item) => item.id === data.subscription.id ? data.subscription : item));
       }
-      setMsg("تم إيقاف التجديد التلقائي لهذا الاشتراك");
+      setMsg("تم إيقاف التجديد التلقائي. سيظل اشتراكك فعالًا حتى نهاية الفترة الحالية.");
       await load();
     } catch(e) { setErr(e.message || "فشل إيقاف التجديد التلقائي"); }
     finally { setBusyKey(""); }
@@ -229,14 +229,13 @@ function BillingPage({ p, navigate }) {
       {authed && <Panel p={p} padding={24} style={{ marginTop:16 }} data-billing-footer="auto-renewal-control">
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
           <div>
-            <Tag p={p} color={p.warn}>AUTO_RENEWAL_CONTROL</Tag>
-            <h2 style={{ margin:"14px 0 6px", fontFamily:"'Bebas Neue', sans-serif", fontSize:38, color:p.fg, letterSpacing:".04em", lineHeight:1 }}>إيقاف التجديد التلقائي</h2>
-            <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.8 }} dir="rtl">أوقف التجديد القادم بدون حذف الرصيد أو إلغاء أي استخدام مدفوع بالفعل. القرار يتسجل في الباك إند كـ cancel_at_period_end.</div>
+            <h2 style={{ margin:"0 0 6px", fontFamily:"'Bebas Neue', sans-serif", fontSize:38, color:p.fg, letterSpacing:".04em", lineHeight:1 }}>إيقاف التجديد التلقائي</h2>
+            <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13, lineHeight:1.8 }} dir="rtl">سيظل اشتراكك فعالًا حتى نهاية الفترة الحالية، ولن يتم تجديده تلقائيًا بعدها. لا يتم حذف الرصيد ولا إلغاء أي استخدام مدفوع بالفعل.</div>
           </div>
-          <CrunchBtn p={p} label="تحديث الاشتراكات" onClick={load} />
+          <CrunchBtn p={p} label="تحديث حالة الاشتراك" onClick={load} />
         </div>
         <div style={{ marginTop:16, display:"grid", gap:10 }}>
-          {!subscriptions.length && <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13 }}>لا توجد اشتراكات محفوظة على حسابك حاليًا.</div>}
+          {!subscriptions.length && <div style={{ color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:13 }}>لا توجد اشتراكات نشطة محفوظة على حسابك حاليًا.</div>}
           {subscriptions.map((sub) => <SubscriptionRenewalRow key={sub.id} p={p} subscription={sub} busy={busyKey === `cancel_${sub.id}`} onCancel={() => cancelAutoRenewal(sub.id)} />)}
         </div>
       </Panel>}
@@ -295,22 +294,22 @@ function subscriptionAutoRenewEnabled(subscription) {
 
 function SubscriptionRenewalRow({ p, subscription, busy, onCancel }) {
   const autoRenew = subscriptionAutoRenewEnabled(subscription);
-  const status = String(subscription.status || "active").toUpperCase();
-  const label = subscription.packageKey || subscription.planKey || subscription.source || "subscription";
+  const status = String(subscription.status || "active");
+  const label = subscription.packageKey || subscription.planKey || subscription.source || "اشتراك";
   const endDate = subscription.currentPeriodEnd || subscription.cancelEffectiveAt || subscription.renewsAt || "غير محدد";
   return <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:12, alignItems:"center", background:p.bg0, border:`1px solid ${autoRenew ? p.warn : p.border}`, padding:14 }}>
     <div>
       <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
         <div style={{ fontFamily:"'Bebas Neue', sans-serif", color:p.fg, fontSize:22, letterSpacing:".05em" }}>{label}</div>
-        <span style={{ fontFamily:"'Space Mono', monospace", color:autoRenew?p.warn:p.accent2, fontSize:9, letterSpacing:".12em", border:`1px solid ${autoRenew?p.warn:p.accent2}`, padding:"4px 7px" }}>{autoRenew ? "AUTO_RENEW_ON" : "AUTO_RENEW_OFF"}</span>
+        <span style={{ fontFamily:"'Inter', sans-serif", color:autoRenew?p.warn:p.accent2, fontSize:11, border:`1px solid ${autoRenew?p.warn:p.accent2}`, padding:"4px 8px" }}>{autoRenew ? "التجديد التلقائي مفعل" : "التجديد التلقائي متوقف"}</span>
         <span style={{ fontFamily:"'Space Mono', monospace", color:p.dim, fontSize:9, letterSpacing:".12em" }}>{status}</span>
       </div>
       <div style={{ marginTop:6, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:12, lineHeight:1.7 }} dir="rtl">
-        {autoRenew ? "الاشتراك مضبوط على التجديد التلقائي." : "التجديد التلقائي متوقف. الاشتراك الحالي لا يتم حذفه تلقائيًا."}
+        {autoRenew ? "سيتم تجديد الاشتراك تلقائيًا في نهاية الفترة الحالية ما لم توقفه." : "سيظل الاشتراك الحالي فعالًا حتى نهاية الفترة الحالية، ولن يتم تجديده تلقائيًا بعدها."}
       </div>
-      <div style={{ marginTop:4, color:p.dim, fontFamily:"'Space Mono', monospace", fontSize:9, letterSpacing:".08em" }}>PERIOD_END · {endDate}</div>
+      <div style={{ marginTop:4, color:p.dim, fontFamily:"'Inter', sans-serif", fontSize:12 }} dir="rtl">نهاية الفترة الحالية: {endDate}</div>
     </div>
-    <CrunchBtn p={p} label={busy ? "جاري الإيقاف..." : (autoRenew ? "إيقاف التجديد" : "متوقف")} solid={autoRenew} onClick={onCancel} disabled={!autoRenew || busy} />
+    <CrunchBtn p={p} label={busy ? "جارٍ الإيقاف..." : (autoRenew ? "إيقاف التجديد التلقائي" : "التجديد التلقائي متوقف")} solid={autoRenew} onClick={onCancel} disabled={!autoRenew || busy} />
   </div>;
 }
 
